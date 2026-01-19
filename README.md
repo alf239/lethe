@@ -115,8 +115,9 @@ LETTA_BASE_URL=http://localhost:8283
 
 ### Config Files
 
-- `config/identity.md` - Agent persona and capabilities
-- `config/project.md` - Current project context
+- `config/identity.md` - Agent persona and capabilities (loaded into `persona` memory block)
+- `config/project.md` - Current project context (loaded into `project` memory block)
+- `config/tools.md` - CLI tools documentation (loaded into `tools` memory block)
 
 ## Tools
 
