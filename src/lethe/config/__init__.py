@@ -48,8 +48,15 @@ class Settings(BaseSettings):
     # Database
     db_path: Path = Field(default=Path("./data/lethe.db"), description="SQLite database path")
 
-    # Browser
-    browser_headless: bool = Field(default=True, description="Run browser in headless mode")
+    # Browser / Steel
+    steel_base_url: str = Field(
+        default="http://127.0.0.1:3000",
+        description="Steel Browser API URL (local Docker or cloud). Use 127.0.0.1, not localhost (IPv6 issues).",
+    )
+    steel_api_key: Optional[str] = Field(
+        default=None,
+        description="Steel API key (required for Steel Cloud, optional for local)",
+    )
 
 _settings: Optional[Settings] = None
 

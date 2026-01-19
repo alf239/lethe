@@ -1,11 +1,22 @@
 """Custom tools for the Lethe agent."""
 
 import inspect
+import os
 import re
 from typing import Any
 
 # Import all tool modules
 from lethe.tools import filesystem, cli
+
+# Conditionally import browser tools if dependencies are available
+_browser_available = False
+try:
+    import playwright
+    import steel
+    from lethe.tools import browser
+    _browser_available = True
+except ImportError:
+    browser = None  # type: ignore
 
 
 def _strip_decorator(source: str) -> str:
@@ -15,12 +26,23 @@ def _strip_decorator(source: str) -> str:
     return '\n'.join(filtered)
 
 
-def get_all_tools() -> list[dict[str, Any]]:
-    """Get all tool definitions for registration with Letta."""
+def get_all_tools(include_browser: bool = True) -> list[dict[str, Any]]:
+    """Get all tool definitions for registration with Letta.
+    
+    Args:
+        include_browser: Include browser tools if dependencies are available
+    """
     tools = []
+    
+    # Core tool modules
+    modules = [filesystem, cli]
+    
+    # Add browser module if available and requested
+    if include_browser and _browser_available and browser is not None:
+        modules.append(browser)
 
     # Collect tools from each module
-    for module in [filesystem, cli]:
+    for module in modules:
         for name, func in inspect.getmembers(module, inspect.isfunction):
             if hasattr(func, "_is_tool") and func._is_tool:
                 source = inspect.getsource(func)
@@ -32,6 +54,11 @@ def get_all_tools() -> list[dict[str, Any]]:
                 })
 
     return tools
+
+
+def is_browser_available() -> bool:
+    """Check if browser tools are available."""
+    return _browser_available
 
 
 def tool(func):
