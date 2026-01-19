@@ -80,6 +80,43 @@ find . -name "*.py"
 wc -l <file>
 ```
 
+## Browser Automation
+
+Browser tools for web automation. Uses Steel Browser + Playwright with persistent sessions.
+
+### Key Concepts
+
+- **Persistent sessions**: Cookies, localStorage, and login state persist across tool calls
+- **Accessibility Tree**: Use `browser_get_context()` for token-efficient page understanding (~90% smaller than raw DOM)
+- **Close when done**: Call `browser_close()` to release the session when finished
+
+### Workflow Example
+
+```
+1. browser_navigate("https://example.com/login")
+2. browser_get_context()  # See what's on the page
+3. browser_fill(value="user@email.com", label="Email")
+4. browser_fill(value="password123", label="Password") 
+5. browser_click(text="Sign In")
+6. browser_wait_for(text="Dashboard")  # Wait for login to complete
+7. browser_get_context()  # Now logged in, see dashboard elements
+8. ... do more actions ...
+9. browser_close()  # Release session when done
+```
+
+### Available Functions
+
+| Function | Purpose |
+|----------|---------|
+| `browser_navigate(url)` | Go to a URL |
+| `browser_get_context()` | Get page elements (token-efficient) |
+| `browser_click(selector or text)` | Click an element |
+| `browser_fill(value, selector or label)` | Type into an input |
+| `browser_extract_text(selector)` | Get text content |
+| `browser_screenshot()` | Take a screenshot |
+| `browser_wait_for(selector or text)` | Wait for element to appear |
+| `browser_close()` | Release browser session |
+
 ---
 
 *Add more tools here as they're installed or discovered.*

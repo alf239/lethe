@@ -140,7 +140,7 @@ def main():
     args = parser.parse_args()
 
     setup_logging(verbose=args.verbose)
-
+    
     try:
         asyncio.run(run())
     except KeyboardInterrupt:

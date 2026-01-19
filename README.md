@@ -106,11 +106,42 @@ The agent has access to:
 - `grep_search` - Search file contents
 
 ### CLI
-- `run_command` - Execute shell commands
-- `run_command_background` - Start background processes
-- `run_gog` - Gmail operations via gog CLI
-- `get_environment_info` - System information
-- `check_command_exists` - Check if command is available
+- `bash` - Execute shell commands with timeout support
+- `bash_output` - Get output from background processes
+- `kill_bash` - Terminate background processes
+
+### Browser (requires Steel)
+- `browser_navigate` - Navigate to a URL
+- `browser_get_context` - Get page context (accessibility tree, token-efficient)
+- `browser_click` - Click elements by selector or text
+- `browser_fill` - Fill input fields
+- `browser_extract_text` - Extract text from page or element
+- `browser_screenshot` - Take screenshots
+- `browser_wait_for` - Wait for elements to appear
+- `browser_close` - Close browser session
+
+## Browser Setup (Steel)
+
+Browser tools require Steel Browser running locally:
+
+```bash
+# Option 1: Docker Compose (recommended)
+docker compose -f docker-compose.steel.yml up -d
+
+# Option 2: Direct Docker
+docker run -d -p 3000:3000 -p 9223:9223 ghcr.io/steel-dev/steel-browser
+
+# Install browser dependencies
+uv sync --extra browser
+playwright install chromium
+```
+
+Steel provides:
+- Persistent sessions (cookies, localStorage across requests)
+- Anti-bot protection and stealth
+- Session viewer at http://localhost:3000/ui
+
+The browser tools use the **Accessibility Tree** instead of raw DOM, reducing context sent to the LLM by ~90% while preserving semantic meaning.
 
 ## Development
 

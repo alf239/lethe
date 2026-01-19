@@ -33,6 +33,91 @@ class AgentManager:
                 self._client = AsyncLetta(base_url=self.settings.letta_base_url)
         return self._client
 
+    async def clear_pending_approvals(self, agent_id: str) -> bool:
+        """Clear any pending approval requests from previous sessions.
+        
+        Should be called on startup to avoid 409 PENDING_APPROVAL errors.
+        Uses agent.message_ids to find the last in-context message (source of truth).
+        Returns True if any pending approvals were cleared.
+        """
+        try:
+            # Get agent state to access message_ids (source of truth for pending approvals)
+            agent = await self.client.agents.retrieve(agent_id)
+            message_ids = getattr(agent, "message_ids", None) or []
+            
+            if not message_ids:
+                return False
+            
+            # The LAST message in message_ids is the current state
+            last_message_id = message_ids[-1]
+            
+            # Retrieve that message to check if it's an approval request
+            retrieved_messages = await self.client.messages.retrieve(last_message_id)
+            
+            # Find approval_request_message if it exists
+            approval_msg = None
+            if isinstance(retrieved_messages, list):
+                for msg in retrieved_messages:
+                    if getattr(msg, "message_type", None) == "approval_request_message":
+                        approval_msg = msg
+                        break
+            elif getattr(retrieved_messages, "message_type", None) == "approval_request_message":
+                approval_msg = retrieved_messages
+            
+            if not approval_msg:
+                return False
+            
+            # Extract tool_call_ids from the approval request
+            tool_call_ids = []
+            
+            # Try tool_calls array first (newer API)
+            tool_calls = getattr(approval_msg, "tool_calls", None) or []
+            for tc in tool_calls:
+                tc_id = getattr(tc, "tool_call_id", None)
+                if tc_id:
+                    tool_call_ids.append(tc_id)
+            
+            # Fall back to single tool_call (older API)
+            if not tool_call_ids:
+                tool_call = getattr(approval_msg, "tool_call", None)
+                if tool_call:
+                    tc_id = getattr(tool_call, "tool_call_id", None)
+                    if tc_id:
+                        tool_call_ids.append(tc_id)
+            
+            if not tool_call_ids:
+                return False
+            
+            logger.info(f"Found {len(tool_call_ids)} pending approval(s), clearing...")
+            
+            # Deny all pending approvals
+            approvals = [
+                {
+                    "type": "approval",
+                    "tool_call_id": tc_id,
+                    "approve": False,
+                    "reason": "Stale request from previous session - auto-cleared on startup",
+                }
+                for tc_id in tool_call_ids
+            ]
+            
+            await self.client.agents.messages.create(
+                agent_id=agent_id,
+                messages=[{
+                    "type": "approval",
+                    "approvals": approvals,
+                }],
+            )
+            
+            for tc_id in tool_call_ids:
+                logger.info(f"  Cleared: {tc_id}")
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error clearing pending approvals: {e}")
+            return False
+
     async def get_or_create_agent(self) -> str:
         """Get existing agent or create a new one. Returns agent ID."""
         if self._agent_id:
@@ -50,6 +135,8 @@ class AgentManager:
         if agents:
             self._agent_id = agents[0].id
             logger.info(f"Found existing agent: {self._agent_id}")
+            # Clear any stale pending approvals from previous sessions
+            await self.clear_pending_approvals(self._agent_id)
             # Still need to set up tool handlers
             self._setup_tool_handlers()
             return self._agent_id
@@ -174,6 +261,25 @@ I'll update this as I learn about my principal's current projects and priorities
             "glob_search": filesystem.glob_search,
             "grep_search": filesystem.grep_search,
         }
+        
+        # Add async browser tools (sync Playwright has threading issues with asyncio)
+        try:
+            from lethe.tools import browser_async
+            self._tool_handlers.update({
+                "browser_navigate": browser_async.browser_navigate_async,
+                "browser_get_context": browser_async.browser_get_context_async,
+                "browser_get_text": browser_async.browser_get_text_async,
+                "browser_click": browser_async.browser_click_async,
+                "browser_fill": browser_async.browser_fill_async,
+                "browser_screenshot": browser_async.browser_screenshot_async,
+                "browser_scroll": browser_async.browser_scroll_async,
+                "browser_wait_for": browser_async.browser_wait_for_async,
+                "browser_extract_text": browser_async.browser_extract_text_async,
+                "browser_close": browser_async.browser_close_async,
+            })
+            logger.info("Async browser tools registered")
+        except ImportError as e:
+            logger.warning(f"Browser tools not available: {e}")
 
     async def _register_tools(self) -> list[str]:
         """Register client-side tools with Letta. Returns list of tool names."""
@@ -317,6 +423,141 @@ I'll update this as I learn about my principal's current projects and priorities
             """
             raise Exception("Client-side execution required")
 
+        # Browser tools for web automation
+        def browser_start(profile: str = "", use_proxy: bool = False, solve_captcha: bool = False) -> str:
+            """Start a browser session with optional profile for persistent auth.
+            
+            Args:
+                profile: Profile name to use/create (e.g., "linkedin"). Persists cookies and auth.
+                use_proxy: Whether to use Steel's proxy (helps avoid detection)
+                solve_captcha: Whether to enable automatic CAPTCHA solving
+            
+            Returns:
+                JSON with session info including session_id and profile status
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_navigate(url: str, wait_until: str = "domcontentloaded") -> str:
+            """Navigate the browser to a URL.
+            
+            Args:
+                url: The URL to navigate to (must include protocol)
+                wait_until: When to consider navigation complete (domcontentloaded, load, networkidle)
+            
+            Returns:
+                JSON with status code, final URL, and page title
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_get_context(max_elements: int = 100) -> str:
+            """Get interactive elements on the page via accessibility tree.
+            
+            Returns what's actually VISIBLE - buttons, links, inputs, headings.
+            Use this to understand what actions are available on the page.
+            
+            Args:
+                max_elements: Maximum number of elements to include (default 100)
+            
+            Returns:
+                JSON with URL, title, and list of interactive elements with roles and names
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_get_text(max_length: int = 15000) -> str:
+            """Get all visible text content from the page.
+            
+            Extracts readable text from the accessibility tree - what a screen reader sees.
+            
+            Args:
+                max_length: Maximum characters to return (default 15000)
+            
+            Returns:
+                JSON with URL, title, and visible text content
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_click(selector: str = "", text: str = "") -> str:
+            """Click an element on the page.
+            
+            Args:
+                selector: CSS selector (e.g., "button.submit", "#login-btn")
+                text: Text content to find and click (alternative to selector)
+            
+            Returns:
+                JSON with success status
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_fill(value: str, selector: str = "", label: str = "") -> str:
+            """Fill a text input field.
+            
+            Args:
+                value: Text to enter in the field
+                selector: CSS selector for the input
+                label: Label text to find the input (alternative to selector)
+            
+            Returns:
+                JSON with success status
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_wait_for(selector: str = "", text: str = "", timeout_seconds: int = 30) -> str:
+            """Wait for an element to appear on the page.
+            
+            Args:
+                selector: CSS selector to wait for
+                text: Text content to wait for (alternative to selector)
+                timeout_seconds: Maximum time to wait (default 30)
+            
+            Returns:
+                JSON with success status
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_screenshot(full_page: bool = False) -> str:
+            """Take a screenshot of the current page.
+            
+            Args:
+                full_page: If True, capture entire scrollable page
+            
+            Returns:
+                JSON with base64-encoded PNG screenshot
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_extract_text(selector: str = "") -> str:
+            """Extract text content from the page or a specific element.
+            
+            Args:
+                selector: Optional CSS selector. If empty, extracts all visible text.
+            
+            Returns:
+                JSON with extracted text (truncated to 10k chars if longer)
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_scroll(direction: str = "down", amount: int = 500) -> str:
+            """Scroll the page.
+            
+            Args:
+                direction: "down", "up", "top", or "bottom"
+                amount: Pixels to scroll for up/down (default 500)
+            
+            Returns:
+                JSON with success status and scroll position info
+            """
+            raise Exception("Client-side execution required")
+        
+        def browser_close() -> str:
+            """Close the browser session and release resources.
+            
+            If using a profile, the auth state is saved automatically.
+            
+            Returns:
+                JSON with success status and profile save status
+            """
+            raise Exception("Client-side execution required")
+        
         stub_functions = [
             bash,
             bash_output,
@@ -329,6 +570,18 @@ I'll update this as I learn about my principal's current projects and priorities
             list_directory,
             glob_search,
             grep_search,
+            # Browser tools
+            browser_start,
+            browser_navigate,
+            browser_get_context,
+            browser_get_text,
+            browser_click,
+            browser_fill,
+            browser_wait_for,
+            browser_screenshot,
+            browser_extract_text,
+            browser_scroll,
+            browser_close,
         ]
 
         for func in stub_functions:
@@ -344,61 +597,22 @@ I'll update this as I learn about my principal's current projects and priorities
 
         return tool_names
 
-    async def _recover_from_pending_approval(self, agent_id: str, original_messages: list):
+    async def _recover_from_pending_approval(self, agent_id: str, original_messages: list, error_str: str = ""):
         """Recover from a stuck pending approval state by denying it and retrying."""
-        # Get recent messages to find the pending approval request
-        try:
-            recent_messages_response = await self.client.agents.messages.list(
-                agent_id=agent_id,
-                limit=10,
-            )
-            
-            # Handle both sync and async iterators
-            messages_list = []
-            if hasattr(recent_messages_response, '__aiter__'):
-                async for msg in recent_messages_response:
-                    messages_list.append(msg)
-            elif hasattr(recent_messages_response, 'items'):
-                messages_list = recent_messages_response.items
-            else:
-                messages_list = list(recent_messages_response)
-            
-            # Find the approval_request_message
-            tool_call_id = None
-            for msg in messages_list:
-                msg_type = getattr(msg, "message_type", None)
-                if msg_type == "approval_request_message":
-                    # Get tool_call_id from tool_call or tool_calls
-                    tool_call = getattr(msg, "tool_call", None)
-                    if tool_call:
-                        tool_call_id = getattr(tool_call, "tool_call_id", None)
-                    if not tool_call_id:
-                        tool_calls = getattr(msg, "tool_calls", None)
-                        if tool_calls and len(tool_calls) > 0:
-                            tool_call_id = getattr(tool_calls[0], "tool_call_id", None)
-                    if tool_call_id:
-                        break
-            
-            if tool_call_id:
-                logger.info(f"Found pending approval with tool_call_id: {tool_call_id}, denying it")
-                # Deny the pending approval
-                await self.client.agents.messages.create(
-                    agent_id=agent_id,
-                    messages=[{
-                        "type": "approval",
-                        "approvals": [{
-                            "approve": False,
-                            "tool_call_id": tool_call_id,
-                            "reason": "Previous request interrupted, denying to recover",
-                        }]
-                    }],
-                )
-                logger.info("Successfully denied pending approval, retrying original message")
-            else:
-                logger.warning("Could not find pending approval tool_call_id")
-                
-        except Exception as e:
-            logger.warning(f"Error during recovery: {e}")
+        import re
+        
+        # Try to extract pending_request_id from error message
+        pending_request_id = None
+        if error_str:
+            match = re.search(r"'pending_request_id':\s*'(message-[a-f0-9-]+)'", error_str)
+            if match:
+                pending_request_id = match.group(1)
+        
+        if pending_request_id:
+            logger.info(f"Found pending request: {pending_request_id}, trying to clear via clear_pending_approvals")
+        
+        # Use clear_pending_approvals which handles the proper format
+        await self.clear_pending_approvals(agent_id)
         
         # Retry the original message
         return await self.client.agents.messages.create(
@@ -406,15 +620,42 @@ I'll update this as I learn about my principal's current projects and priorities
             messages=original_messages,
         )
 
-    def _execute_tool_locally(self, tool_name: str, arguments: dict) -> tuple[str, str]:
-        """Execute a tool locally and return (result, status)."""
+    async def _execute_tool_locally(self, tool_name: str, arguments: dict) -> tuple[str, str]:
+        """Execute a tool locally and return (result, status).
+        
+        Async tools are called directly. Sync tools run in thread pool executor.
+        """
+        import asyncio
+        import functools
+        import inspect
+        
         handler = self._tool_handlers.get(tool_name)
         if not handler:
             return f"Unknown tool: {tool_name}", "error"
 
         try:
-            result = handler(**arguments)
+            # Check if handler is async
+            if asyncio.iscoroutinefunction(handler):
+                # Call async handler directly with timeout
+                result = await asyncio.wait_for(
+                    handler(**arguments),
+                    timeout=60.0
+                )
+            else:
+                # Run sync handler in thread pool
+                loop = asyncio.get_event_loop()
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        functools.partial(handler, **arguments)
+                    ),
+                    timeout=60.0
+                )
             return str(result), "success"
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            return f"Tool execution timed out after 60 seconds", "error"
         except Exception as e:
             return f"Tool execution error: {e}", "error"
 
@@ -462,7 +703,7 @@ I'll update this as I learn about my principal's current projects and priorities
                 # Handle pending approval from previous incomplete request
                 if "PENDING_APPROVAL" in error_str:
                     logger.warning("Agent has pending approval from previous request, recovering...")
-                    response = await self._recover_from_pending_approval(agent_id, messages)
+                    response = await self._recover_from_pending_approval(agent_id, messages, error_str)
                 else:
                     raise
             
@@ -512,7 +753,7 @@ I'll update this as I learn about my principal's current projects and priorities
                     logger.info(f"Executing tool locally: {tool_name}({tool_args})")
                     
                     # Execute locally
-                    result, status = self._execute_tool_locally(tool_name, tool_args)
+                    result, status = await self._execute_tool_locally(tool_name, tool_args)
                     result_preview = (result[:200] + "...") if result and len(result) > 200 else (result or "(empty)")
                     logger.info(f"  Tool result ({status}): {result_preview}")
                     
@@ -530,27 +771,11 @@ I'll update this as I learn about my principal's current projects and priorities
 
             # Send tool results back - MUST complete to avoid leaving agent in pending state
             logger.info(f"Sending {len(approvals_needed)} tool results back to agent")
-            try:
-                messages = [{"type": "approval", "approvals": approvals_needed}]
-            except Exception as e:
-                logger.error(f"Error preparing approval message: {e}")
-                # Try to deny the approval to clear the pending state
-                for approval in approvals_needed:
-                    try:
-                        await self.client.agents.messages.create(
-                            agent_id=agent_id,
-                            messages=[{
-                                "type": "approval",
-                                "approvals": [{
-                                    "type": "approval",
-                                    "tool_call_id": approval["tool_call_id"],
-                                    "approve": False,
-                                }]
-                            }],
-                        )
-                    except Exception:
-                        pass
-                raise
+            # Use ApprovalCreate format with ToolReturn items
+            messages = [{
+                "type": "approval",
+                "approvals": approvals_needed,  # List of ToolReturn items
+            }]
 
         final_result = "\n\n".join(result_parts) if result_parts else "Task completed."
         logger.info(f"Final result: {len(result_parts)} parts, {len(final_result)} chars")
