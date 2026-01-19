@@ -46,7 +46,7 @@ async def telegram_send_file_async(
     Returns:
         JSON with success status
     """
-    from aiogram.types import FSInputFile, URLInputFile, BufferedInputFile
+    from aiogram.types import FSInputFile
     
     bot = _current_bot.get()
     chat_id = _current_chat_id.get()
@@ -58,10 +58,11 @@ async def telegram_send_file_async(
     is_url = file_path_or_url.startswith(('http://', 'https://'))
     
     if is_url:
-        file_input = URLInputFile(file_path_or_url)
-        filename = file_path_or_url.split('/')[-1].split('?')[0]  # Get filename from URL
+        # For URLs, pass string directly - Telegram will fetch it
+        file_input = file_path_or_url
+        filename = file_path_or_url.split('/')[-1].split('?')[0]
     else:
-        # Local file
+        # Local file - use FSInputFile for multipart upload
         path = Path(file_path_or_url).expanduser()
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
@@ -70,19 +71,29 @@ async def telegram_send_file_async(
     
     # Determine file type by extension
     ext = filename.lower().split('.')[-1] if '.' in filename else ''
-    is_image = ext in ('jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp')
+    is_static_image = ext in ('jpg', 'jpeg', 'png', 'webp', 'bmp')
+    is_gif = ext == 'gif'
     is_video = ext in ('mp4', 'avi', 'mov', 'mkv', 'webm')
-    is_audio = ext in ('mp3', 'ogg', 'wav', 'flac', 'm4a')
-    is_voice = ext == 'ogg'  # Voice messages are typically ogg
+    is_audio = ext in ('mp3', 'wav', 'flac', 'm4a')
+    is_voice = ext == 'ogg'
     
     # Send based on type
-    if is_image and not as_document:
+    # Note: GIFs should use send_animation to display properly (not send_photo)
+    if is_static_image and not as_document:
         result = await bot.send_photo(
             chat_id=chat_id,
             photo=file_input,
             caption=caption or None,
         )
         send_type = "photo"
+    elif is_gif and not as_document:
+        # GIFs need send_animation to animate properly in Telegram
+        result = await bot.send_animation(
+            chat_id=chat_id,
+            animation=file_input,
+            caption=caption or None,
+        )
+        send_type = "animation"
     elif is_video and not as_document:
         result = await bot.send_video(
             chat_id=chat_id,
@@ -90,6 +101,14 @@ async def telegram_send_file_async(
             caption=caption or None,
         )
         send_type = "video"
+    elif is_voice and not as_document:
+        # OGG files sent as voice messages
+        result = await bot.send_voice(
+            chat_id=chat_id,
+            voice=file_input,
+            caption=caption or None,
+        )
+        send_type = "voice"
     elif is_audio and not as_document:
         result = await bot.send_audio(
             chat_id=chat_id,
