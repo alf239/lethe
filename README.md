@@ -268,7 +268,7 @@ Then import the module in `src/lethe/tools/__init__.py`.
 
 ## Roadmap
 
-- [x] **Autoassociative memory** *(in progress)* - Hippocampus subagent for memory retrieval (see below)
+- [x] **Autoassociative memory** - Hippocampus subagent for memory retrieval (see below)
 - [ ] **Full multimodality** - Receive and process images, documents, audio, and video
 - [x] **Long-term persistent subagents** *(partial)* - Delegate tasks to specialized agents
 - [ ] **Workspace and daily agendas** - Structured task management and scheduling
@@ -277,17 +277,25 @@ Then import the module in `src/lethe/tools/__init__.py`.
 
 ## Hippocampus (Autoassociative Memory)
 
-The hippocampus is a lightweight subagent that enhances memory retrieval:
+The hippocampus is a lightweight subagent that enhances memory retrieval, inspired by the biological hippocampus that consolidates and retrieves memories.
 
 ```
-User Message → Hippocampus (haiku) → Memory Search → Augmented Message → Main Agent (sonnet)
+User Message → Hippocampus (haiku 4.5) → Memory Search → Augmented Message → Main Agent
 ```
 
 **How it works:**
-1. Before each message, hippocampus analyzes the last 5 messages
-2. If a new topic is detected, it extracts a search query
-3. Searches archival memory and conversation history
-4. Prepends relevant context to the message: `[HIPPOCAMPUS RECALL: ...]`
+1. Analyzes the **last 15 messages** to understand conversation context
+2. Detects if the **last message** introduces a new topic
+3. If new topic detected, extracts a search query and searches:
+   - Archival memory (long-term semantic storage)
+   - Conversation history
+4. Appends relevant context **after** the user message:
+   ```
+   [Associative memory recall: topic]
+   {retrieved memories}
+   [End of recall]
+   ```
+5. If retrieved memories exceed 3k chars, **auto-compresses** via LLM (no truncation)
 
 **Configuration:**
 ```bash
