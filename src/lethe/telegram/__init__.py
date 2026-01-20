@@ -3,6 +3,8 @@
 import asyncio
 import io
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 from aiogram import Bot, Dispatcher, F
@@ -63,6 +65,35 @@ class TelegramBot:
                 self._letta_client = AsyncLetta(base_url=self.settings.letta_base_url)
         return self._letta_client
     
+    @property
+    def downloads_dir(self) -> Path:
+        """Get the downloads directory, creating if needed."""
+        downloads = self.settings.workspace_dir / "Downloads"
+        downloads.mkdir(parents=True, exist_ok=True)
+        return downloads
+
+    async def save_file_locally(self, file_path: str, original_name: str) -> Path:
+        """Download a file from Telegram and save to workspace/Downloads.
+        
+        Args:
+            file_path: Telegram file path from get_file()
+            original_name: Original filename to preserve
+            
+        Returns:
+            Path to the saved file
+        """
+        # Generate unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = Path(original_name).stem
+        suffix = Path(original_name).suffix or ""
+        local_name = f"{timestamp}_{stem}{suffix}"
+        local_path = self.downloads_dir / local_name
+        
+        # Download from Telegram
+        await self.bot.download_file(file_path, local_path)
+        logger.info(f"Saved file to {local_path}")
+        return local_path
+
     async def get_or_create_folder(self) -> str:
         """Get or create a folder for storing Telegram images."""
         if self._letta_folder_id is None:
@@ -224,28 +255,28 @@ class TelegramBot:
                 # Get the largest photo (last in the array)
                 photo = message.photo[-1]
                 file = await self.bot.get_file(photo.file_id)
+                file_name = file.file_path.split('/')[-1]
                 
-                # Download the file from Telegram
+                # Save locally to workspace/Downloads
+                local_path = await self.save_file_locally(file.file_path, file_name)
+                
+                # Also upload to Letta for multimodal support
                 file_bytes = io.BytesIO()
                 await self.bot.download_file(file.file_path, file_bytes)
                 file_bytes.seek(0)
                 
-                # Upload to Letta
                 folder_id = await self.get_or_create_folder()
-                file_name = file.file_path.split('/')[-1]  # Get original filename
-                
                 upload_response = await self.letta_client.folders.files.upload(
                     folder_id=folder_id,
                     file=file_bytes,
                     name=file_name,
-                    duplicate_handling="suffix"  # Add suffix if duplicate
+                    duplicate_handling="suffix"
                 )
-                
                 letta_file_id = upload_response.id
                 logger.info(f"Uploaded image to Letta: {letta_file_id}")
                 
-                # Queue the task with Letta file_id
-                caption = message.caption or ""
+                # Queue the task with both local path and Letta file_id
+                caption = message.caption or f"[Image: {local_path.name}]"
                 task = await self.task_queue.enqueue(
                     chat_id=message.chat.id,
                     user_id=message.from_user.id,
@@ -256,12 +287,13 @@ class TelegramBot:
                         "message_id": message.message_id,
                         "attachments": [{
                             "type": "image",
+                            "local_path": str(local_path),
                             "letta_file_id": letta_file_id,
                         }],
                     },
                 )
             except Exception as e:
-                logger.error(f"Failed to upload image to Letta: {e}", exc_info=True)
+                logger.error(f"Failed to process image: {e}", exc_info=True)
                 await message.answer("Sorry, failed to process the image. Please try again.")
                 return
 
@@ -283,28 +315,35 @@ class TelegramBot:
                 await message.answer("System not ready. Please try again later.")
                 return
 
-            file = await self.bot.get_file(message.document.file_id)
-            file_url = f"https://api.telegram.org/file/bot{self.settings.telegram_bot_token}/{file.file_path}"
+            try:
+                file = await self.bot.get_file(message.document.file_id)
+                file_name = message.document.file_name or f"document_{message.document.file_id}"
+                
+                # Save locally to workspace/Downloads
+                local_path = await self.save_file_locally(file.file_path, file_name)
 
-            # Queue the task with document URL
-            caption = message.caption or f"Sent file: {message.document.file_name}"
-            task = await self.task_queue.enqueue(
-                chat_id=message.chat.id,
-                user_id=message.from_user.id,
-                message=caption,
-                metadata={
-                    "username": message.from_user.username,
-                    "first_name": message.from_user.first_name,
-                    "message_id": message.message_id,
-                    "attachments": [{
-                        "type": "document",
-                        "url": file_url,
-                        "file_id": message.document.file_id,
-                        "file_name": message.document.file_name,
-                        "mime_type": message.document.mime_type,
-                    }],
-                },
-            )
+                # Queue the task with local path
+                caption = message.caption or f"[Document: {file_name}]"
+                task = await self.task_queue.enqueue(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    message=caption,
+                    metadata={
+                        "username": message.from_user.username,
+                        "first_name": message.from_user.first_name,
+                        "message_id": message.message_id,
+                        "attachments": [{
+                            "type": "document",
+                            "local_path": str(local_path),
+                            "file_name": file_name,
+                            "mime_type": message.document.mime_type,
+                        }],
+                    },
+                )
+            except Exception as e:
+                logger.error(f"Failed to process document: {e}", exc_info=True)
+                await message.answer("Sorry, failed to process the document. Please try again.")
+                return
 
             # Only show queue position if there are multiple tasks
             pending = await self.task_queue.get_pending_count()
@@ -312,6 +351,176 @@ class TelegramBot:
                 await message.answer(f"📋 Queued (position: {pending})")
 
             logger.info(f"Queued document task {task.id} from user {message.from_user.id}")
+
+        @self.dp.message(F.audio)
+        async def handle_audio(message: Message):
+            """Handle audio messages."""
+            if not self._is_authorized(message.from_user.id):
+                return
+
+            if not self.task_queue:
+                await message.answer("System not ready. Please try again later.")
+                return
+
+            try:
+                file = await self.bot.get_file(message.audio.file_id)
+                file_name = message.audio.file_name or f"audio_{message.audio.file_id}.mp3"
+                
+                local_path = await self.save_file_locally(file.file_path, file_name)
+
+                caption = message.caption or f"[Audio: {file_name}]"
+                task = await self.task_queue.enqueue(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    message=caption,
+                    metadata={
+                        "username": message.from_user.username,
+                        "first_name": message.from_user.first_name,
+                        "message_id": message.message_id,
+                        "attachments": [{
+                            "type": "audio",
+                            "local_path": str(local_path),
+                            "file_name": file_name,
+                            "mime_type": message.audio.mime_type,
+                            "duration": message.audio.duration,
+                        }],
+                    },
+                )
+            except Exception as e:
+                logger.error(f"Failed to process audio: {e}", exc_info=True)
+                await message.answer("Sorry, failed to process the audio. Please try again.")
+                return
+
+            pending = await self.task_queue.get_pending_count()
+            if pending > 1:
+                await message.answer(f"📋 Queued (position: {pending})")
+            logger.info(f"Queued audio task {task.id} from user {message.from_user.id}")
+
+        @self.dp.message(F.voice)
+        async def handle_voice(message: Message):
+            """Handle voice messages."""
+            if not self._is_authorized(message.from_user.id):
+                return
+
+            if not self.task_queue:
+                await message.answer("System not ready. Please try again later.")
+                return
+
+            try:
+                file = await self.bot.get_file(message.voice.file_id)
+                file_name = f"voice_{message.voice.file_id}.ogg"
+                
+                local_path = await self.save_file_locally(file.file_path, file_name)
+
+                task = await self.task_queue.enqueue(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    message=f"[Voice message: {message.voice.duration}s]",
+                    metadata={
+                        "username": message.from_user.username,
+                        "first_name": message.from_user.first_name,
+                        "message_id": message.message_id,
+                        "attachments": [{
+                            "type": "voice",
+                            "local_path": str(local_path),
+                            "duration": message.voice.duration,
+                        }],
+                    },
+                )
+            except Exception as e:
+                logger.error(f"Failed to process voice: {e}", exc_info=True)
+                await message.answer("Sorry, failed to process the voice message. Please try again.")
+                return
+
+            pending = await self.task_queue.get_pending_count()
+            if pending > 1:
+                await message.answer(f"📋 Queued (position: {pending})")
+            logger.info(f"Queued voice task {task.id} from user {message.from_user.id}")
+
+        @self.dp.message(F.video)
+        async def handle_video(message: Message):
+            """Handle video messages."""
+            if not self._is_authorized(message.from_user.id):
+                return
+
+            if not self.task_queue:
+                await message.answer("System not ready. Please try again later.")
+                return
+
+            try:
+                file = await self.bot.get_file(message.video.file_id)
+                file_name = message.video.file_name or f"video_{message.video.file_id}.mp4"
+                
+                local_path = await self.save_file_locally(file.file_path, file_name)
+
+                caption = message.caption or f"[Video: {file_name}]"
+                task = await self.task_queue.enqueue(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    message=caption,
+                    metadata={
+                        "username": message.from_user.username,
+                        "first_name": message.from_user.first_name,
+                        "message_id": message.message_id,
+                        "attachments": [{
+                            "type": "video",
+                            "local_path": str(local_path),
+                            "file_name": file_name,
+                            "mime_type": message.video.mime_type,
+                            "duration": message.video.duration,
+                        }],
+                    },
+                )
+            except Exception as e:
+                logger.error(f"Failed to process video: {e}", exc_info=True)
+                await message.answer("Sorry, failed to process the video. Please try again.")
+                return
+
+            pending = await self.task_queue.get_pending_count()
+            if pending > 1:
+                await message.answer(f"📋 Queued (position: {pending})")
+            logger.info(f"Queued video task {task.id} from user {message.from_user.id}")
+
+        @self.dp.message(F.video_note)
+        async def handle_video_note(message: Message):
+            """Handle video note (round video) messages."""
+            if not self._is_authorized(message.from_user.id):
+                return
+
+            if not self.task_queue:
+                await message.answer("System not ready. Please try again later.")
+                return
+
+            try:
+                file = await self.bot.get_file(message.video_note.file_id)
+                file_name = f"video_note_{message.video_note.file_id}.mp4"
+                
+                local_path = await self.save_file_locally(file.file_path, file_name)
+
+                task = await self.task_queue.enqueue(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    message=f"[Video note: {message.video_note.duration}s]",
+                    metadata={
+                        "username": message.from_user.username,
+                        "first_name": message.from_user.first_name,
+                        "message_id": message.message_id,
+                        "attachments": [{
+                            "type": "video_note",
+                            "local_path": str(local_path),
+                            "duration": message.video_note.duration,
+                        }],
+                    },
+                )
+            except Exception as e:
+                logger.error(f"Failed to process video note: {e}", exc_info=True)
+                await message.answer("Sorry, failed to process the video note. Please try again.")
+                return
+
+            pending = await self.task_queue.get_pending_count()
+            if pending > 1:
+                await message.answer(f"📋 Queued (position: {pending})")
+            logger.info(f"Queued video_note task {task.id} from user {message.from_user.id}")
 
         @self.dp.message(F.text)
         async def handle_message(message: Message):
