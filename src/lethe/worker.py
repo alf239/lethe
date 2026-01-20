@@ -214,15 +214,12 @@ Current date: {date_str}
 This is a periodic check-in. Review your state:
 
 1. Check your MEMORY BLOCKS for any pending tasks, reminders, or notes
-2. Check your TASK LIST for items that may be due or need follow-up
-3. Use CALENDAR TOOLS if available to check upcoming events
-4. Review recent CONVERSATION HISTORY for anything you promised to follow up on
-5. Consider if there's anything PROACTIVE you should do or remind the user about
+2. Review recent CONVERSATION HISTORY for anything you promised to follow up on
+3. Consider if there's anything PROACTIVE you should do or remind the user about
 
 Based on your review, decide if you should notify the user:
-- Upcoming calendar events or deadlines
-- Reminders or tasks that are due now
-- Important follow-ups from previous conversations  
+- Reminders or follow-ups that are due now
+- Important items from previous conversations that need attention
 - Anything time-sensitive the user should know
 
 IMPORTANT: Only send a message if you have something genuinely useful to tell the user.

@@ -929,12 +929,45 @@ I'll update this as I learn about my principal's current projects and priorities
 
         # Format message with context if provided
         if context:
-            formatted = f"[Context: user={context.get('username', 'unknown')}]\n\n{message}"
+            context_prefix = f"[Context: user={context.get('username', 'unknown')}]\n\n"
+            formatted = context_prefix + message
         else:
             formatted = message
 
-        # Initial message
-        messages = [{"role": "user", "content": formatted}]
+        # Check if we have attachments (multimodal)
+        attachments = context.get("attachments", []) if context else []
+        
+        if attachments:
+            # Build multimodal content array
+            content = [{"type": "text", "text": formatted}]
+            
+            for attachment in attachments:
+                if attachment.get("type") == "image":
+                    # Check if we have a Letta file_id (preferred) or URL
+                    if "letta_file_id" in attachment:
+                        content.append({
+                            "type": "image",
+                            "source": {
+                                "type": "letta",
+                                "file_id": attachment["letta_file_id"],
+                            }
+                        })
+                    elif "url" in attachment:
+                        # Fallback to URL for backwards compatibility
+                        content.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": attachment["url"],
+                            }
+                        })
+                # Add more attachment types here as needed (documents, etc.)
+                # For now, non-image attachments will just be in the text context
+            
+            messages = [{"role": "user", "content": content}]
+        else:
+            # Simple text message
+            messages = [{"role": "user", "content": formatted}]
         
         result_parts = []
         max_iterations = 20  # Safety limit

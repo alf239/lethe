@@ -1,6 +1,7 @@
 """Telegram bot interface."""
 
 import asyncio
+import io
 import logging
 from typing import Callable, Optional
 
@@ -10,6 +11,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.enums import ChatAction
 from aiogram.types import Message
+from letta_client import AsyncLetta
 
 from lethe.config import Settings, get_settings
 from lethe.queue import TaskQueue
@@ -36,6 +38,9 @@ class TelegramBot:
         self.task_queue = task_queue
         self.bg_task_manager = bg_task_manager
         self.on_task_stopped = on_task_stopped  # async callback(task_ids: list[str])
+        
+        self._letta_client: Optional[AsyncLetta] = None
+        self._letta_folder_id: Optional[str] = None
 
         self.bot = Bot(
             token=self.settings.telegram_bot_token,
@@ -44,6 +49,40 @@ class TelegramBot:
         self.dp = Dispatcher()
 
         self._setup_handlers()
+
+    @property
+    def letta_client(self) -> AsyncLetta:
+        """Get or create the Letta client for file uploads."""
+        if self._letta_client is None:
+            if self.settings.letta_api_key:
+                self._letta_client = AsyncLetta(
+                    base_url=self.settings.letta_base_url,
+                    api_key=self.settings.letta_api_key,
+                )
+            else:
+                self._letta_client = AsyncLetta(base_url=self.settings.letta_base_url)
+        return self._letta_client
+    
+    async def get_or_create_folder(self) -> str:
+        """Get or create a folder for storing Telegram images."""
+        if self._letta_folder_id is None:
+            # Try to find existing folder named "telegram_images"
+            folders = await self.letta_client.folders.list()
+            for folder in folders:
+                if getattr(folder, "name", None) == "telegram_images":
+                    self._letta_folder_id = folder.id
+                    break
+            
+            # Create if it doesn't exist
+            if self._letta_folder_id is None:
+                folder = await self.letta_client.folders.create(
+                    name="telegram_images",
+                    description="Images uploaded from Telegram"
+                )
+                self._letta_folder_id = folder.id
+                logger.info(f"Created Letta folder for images: {self._letta_folder_id}")
+        
+        return self._letta_folder_id
 
     def _setup_handlers(self):
         """Set up message handlers."""
@@ -169,6 +208,110 @@ class TelegramBot:
                         logger.warning(f"Error notifying agent about stopped tasks: {e}")
             else:
                 await message.answer("Failed to stop tasks.")
+
+        @self.dp.message(F.photo)
+        async def handle_photo(message: Message):
+            """Handle photo messages."""
+            if not self._is_authorized(message.from_user.id):
+                logger.warning(f"Unauthorized photo from user {message.from_user.id}")
+                return
+
+            if not self.task_queue:
+                await message.answer("System not ready. Please try again later.")
+                return
+
+            try:
+                # Get the largest photo (last in the array)
+                photo = message.photo[-1]
+                file = await self.bot.get_file(photo.file_id)
+                
+                # Download the file from Telegram
+                file_bytes = io.BytesIO()
+                await self.bot.download_file(file.file_path, file_bytes)
+                file_bytes.seek(0)
+                
+                # Upload to Letta
+                folder_id = await self.get_or_create_folder()
+                file_name = file.file_path.split('/')[-1]  # Get original filename
+                
+                upload_response = await self.letta_client.folders.files.upload(
+                    folder_id=folder_id,
+                    file=file_bytes,
+                    name=file_name,
+                    duplicate_handling="suffix"  # Add suffix if duplicate
+                )
+                
+                letta_file_id = upload_response.id
+                logger.info(f"Uploaded image to Letta: {letta_file_id}")
+                
+                # Queue the task with Letta file_id
+                caption = message.caption or ""
+                task = await self.task_queue.enqueue(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    message=caption,
+                    metadata={
+                        "username": message.from_user.username,
+                        "first_name": message.from_user.first_name,
+                        "message_id": message.message_id,
+                        "attachments": [{
+                            "type": "image",
+                            "letta_file_id": letta_file_id,
+                        }],
+                    },
+                )
+            except Exception as e:
+                logger.error(f"Failed to upload image to Letta: {e}", exc_info=True)
+                await message.answer("Sorry, failed to process the image. Please try again.")
+                return
+
+            # Only show queue position if there are multiple tasks
+            pending = await self.task_queue.get_pending_count()
+            if pending > 1:
+                await message.answer(f"📋 Queued (position: {pending})")
+
+            logger.info(f"Queued photo task {task.id} from user {message.from_user.id}")
+
+        @self.dp.message(F.document)
+        async def handle_document(message: Message):
+            """Handle document messages."""
+            if not self._is_authorized(message.from_user.id):
+                logger.warning(f"Unauthorized document from user {message.from_user.id}")
+                return
+
+            if not self.task_queue:
+                await message.answer("System not ready. Please try again later.")
+                return
+
+            file = await self.bot.get_file(message.document.file_id)
+            file_url = f"https://api.telegram.org/file/bot{self.settings.telegram_bot_token}/{file.file_path}"
+
+            # Queue the task with document URL
+            caption = message.caption or f"Sent file: {message.document.file_name}"
+            task = await self.task_queue.enqueue(
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                message=caption,
+                metadata={
+                    "username": message.from_user.username,
+                    "first_name": message.from_user.first_name,
+                    "message_id": message.message_id,
+                    "attachments": [{
+                        "type": "document",
+                        "url": file_url,
+                        "file_id": message.document.file_id,
+                        "file_name": message.document.file_name,
+                        "mime_type": message.document.mime_type,
+                    }],
+                },
+            )
+
+            # Only show queue position if there are multiple tasks
+            pending = await self.task_queue.get_pending_count()
+            if pending > 1:
+                await message.answer(f"📋 Queued (position: {pending})")
+
+            logger.info(f"Queued document task {task.id} from user {message.from_user.id}")
 
         @self.dp.message(F.text)
         async def handle_message(message: Message):
