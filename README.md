@@ -21,6 +21,33 @@ Lethe uses Letta's persistent memory, which means:
 
 The agent can modify its own memory blocks (`persona`, `human`, `project`, `tasks`, `tools`) using `core_memory_append` and `core_memory_replace`, and store unlimited long-term memories in archival storage.
 
+## Proactive & Persistent
+
+Unlike typical chatbots that wait for input, Lethe is designed to be genuinely autonomous:
+
+- **Background Task Processing**: Handles long-running tasks asynchronously while staying responsive to new requests
+- **Periodic Heartbeats**: Checks in every 15 minutes to review memory, conversation history, and proactively surface reminders or follow-ups
+- **Self-Improvement**: Continuously learns from interactions, updating its own memory blocks and tool knowledge
+- **Full System Access**: Can execute shell commands, manage files, browse the web, and interact with CLI tools—all without waiting for permission
+- **Task Persistence**: Remembers commitments across sessions and follows up on promises made in previous conversations
+
+The agent doesn't just respond—it actively manages ongoing work, reminds you of important items, and suggests next steps based on your project context.
+
+## Heartbeats
+
+Lethe performs periodic check-ins (default: every 15 minutes) to maintain continuity and proactivity:
+
+**What happens during a heartbeat:**
+1. Reviews all memory blocks for pending tasks or reminders
+2. Scans recent conversation history for follow-up items
+3. Considers time-sensitive actions or proactive suggestions
+4. Sends a notification only if there's something genuinely useful to report
+
+**Identity Refresh:**
+Every 2 hours, the agent refreshes its identity context to stay aligned with its current persona and project state.
+
+Heartbeats ensure that even if you're away, Lethe stays aware of commitments and can surface them when relevant—turning a reactive chatbot into an active assistant.
+
 ## Architecture
 
 ```
