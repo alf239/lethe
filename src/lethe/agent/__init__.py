@@ -1103,11 +1103,13 @@ I'll update this as I learn about my principal's current projects and priorities
                         content_lower = content.lower()
                         is_empty_continuation = (
                             continuation_count > 0 and 
-                            len(content) < 200 and
+                            len(content) < 300 and
                             any(phrase in content_lower for phrase in [
                                 "no further action", "no action available", "nothing to do",
                                 "nothing further", "no additional", "task is complete",
                                 "already complete", "nothing more", "no more action",
+                                "nothing for me to do", "genuinely nothing", "no action needed",
+                                "nothing else to", "no actions to", "completed the task",
                             ])
                         )
                         
