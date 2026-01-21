@@ -83,9 +83,10 @@ class Worker:
                             text=content,
                         )
                     
-                    # Add cancellation check to context
+                    # Add cancellation check and original request to context
                     context = task.metadata.copy() if task.metadata else {}
                     context["_cancel_check"] = self.is_cancel_requested
+                    context["_original_request"] = task.message
                     
                     # Use aiogram's ChatActionSender to show typing indicator
                     async with ChatActionSender.typing(
