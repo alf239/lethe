@@ -1043,7 +1043,9 @@ I'll update this as I learn about my principal's current projects and priorities
             messages = [{"role": "user", "content": formatted}]
         
         result_parts = []
-        max_iterations = 20  # Safety limit
+        max_iterations = 20  # Safety limit for tool call loops
+        max_continuations = 5  # Safety limit for end_turn continuations
+        continuation_count = 0
         
         for iteration in range(max_iterations):
             # Send to agent
@@ -1129,17 +1131,35 @@ I'll update this as I learn about my principal's current projects and priorities
                     })
 
             # Check if we're done
-            if stop_reason != "requires_approval" or not approvals_needed:
-                logger.info(f"Exiting loop: stop_reason={stop_reason}, approvals_needed={len(approvals_needed)}")
-                break
-
-            # Send tool results back - MUST complete to avoid leaving agent in pending state
-            logger.info(f"Sending {len(approvals_needed)} tool results back to agent")
-            # Use ApprovalCreate format with ToolReturn items
-            messages = [{
-                "type": "approval",
-                "approvals": approvals_needed,  # List of ToolReturn items
-            }]
+            if stop_reason == "requires_approval" and approvals_needed:
+                # Send tool results back - MUST complete to avoid leaving agent in pending state
+                logger.info(f"Sending {len(approvals_needed)} tool results back to agent")
+                messages = [{
+                    "type": "approval",
+                    "approvals": approvals_needed,
+                }]
+                continue
+            
+            # Agent ended turn - check if we should prompt continuation
+            if stop_reason == "end_turn" and result_parts and continuation_count < max_continuations:
+                last_response = result_parts[-1].lower() if result_parts else ""
+                
+                # Detect if agent indicates more work to do
+                continuation_indicators = [
+                    "let me ", "i'll ", "i will ", "now i", "next i", 
+                    "continuing", "working on", "proceeding", "starting",
+                    "first,", "then,", "after that", "step 1", "step 2",
+                ]
+                needs_continuation = any(ind in last_response for ind in continuation_indicators)
+                
+                if needs_continuation:
+                    continuation_count += 1
+                    logger.info(f"Detected incomplete task, sending continuation prompt ({continuation_count}/{max_continuations})")
+                    messages = [{"role": "user", "content": "[SYSTEM] Continue with the task. Don't explain what you're going to do - just do it using tools."}]
+                    continue
+            
+            logger.info(f"Exiting loop: stop_reason={stop_reason}, continuations={continuation_count}")
+            break
 
         final_result = "\n\n".join(result_parts) if result_parts else ""
         logger.info(f"Final result: {len(result_parts)} parts, {len(final_result)} chars")
