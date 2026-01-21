@@ -397,12 +397,18 @@ IS_CONTINUATION_RESPONSE: {is_continuation}
 Judge this response:
 
 1. SEND_TO_USER: Should this response be shown to the user?
-   - YES if: contains useful information, results, findings, or meaningful update
-   - NO if: just acknowledging continuation, saying "nothing to do", meta-commentary about the task itself
+   - YES if: contains substantive information the user asked for (results, findings, answers)
+   - NO if: 
+     * Just confirming an action was taken ("I've done X", "I've set Y", "reminder created")
+     * Internal reflection or thinking out loud
+     * Meta-commentary about the task ("I'll do this", "working on it")
+     * Acknowledgments without new information
+   
+   Be STRICT - only send responses with actual content the user needs to see.
 
 2. CONTINUE_TASK: Should the agent continue working?
-   - YES if: agent expressed intent to do more, task clearly incomplete
-   - NO if: agent provided final results, natural stopping point, or said there's nothing more to do
+   - YES if: agent expressed clear intent to do more, task obviously incomplete
+   - NO if: action completed, natural stopping point, nothing more to do
 
 Respond with JSON only:
 {{"send_to_user": true/false, "continue_task": true/false, "reason": "brief explanation"}}"""
