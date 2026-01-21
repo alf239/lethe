@@ -333,7 +333,7 @@ async def browser_extract_text_async(selector: str = "") -> str:
     
     return json.dumps({
         "url": page.url,
-        "text": text[:10000],  # Limit length
+        "text": text[:100000],  # Allow up to 100k chars
         "truncated": len(text) > 10000,
     }, indent=2)
 

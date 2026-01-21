@@ -37,7 +37,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 2000) -> str:
         result = []
         for i, line in enumerate(selected, start=offset + 1):
             if len(line) > 500:
-                line = line[:500] + "... [truncated]\n"
+                line = line[:10000] + "... [truncated]\n"
             result.append(f"{i:6d}\t{line.rstrip()}")
 
         header = f"File: {path} (lines {offset + 1}-{offset + len(selected)} of {total_lines})"
@@ -235,7 +235,7 @@ def grep_search(pattern: str, path: str = ".", file_pattern: str = "*") -> str:
                     for line_num, line in enumerate(f, 1):
                         if regex.search(line):
                             rel_path = file_path.relative_to(base_path) if file_path.is_relative_to(base_path) else file_path
-                            results.append(f"{rel_path}:{line_num}: {line.rstrip()[:200]}")
+                            results.append(f"{rel_path}:{line_num}: {line.rstrip()}")
                             matches_found += 1
 
                             if matches_found >= 100:

@@ -329,7 +329,7 @@ class TaskManager:
             """,
             (TaskStatus.COMPLETED.value, now.isoformat(), result, task_id),
         )
-        await self._add_event(task_id, "completed", {"result": result[:200] if result else None})
+        await self._add_event(task_id, "completed", {"result": result})
         await self._db.commit()
         logger.info(f"Task {task_id} completed")
     

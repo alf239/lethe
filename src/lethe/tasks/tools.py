@@ -143,7 +143,7 @@ async def get_tasks_async(
     for task in tasks:
         task_info = {
             "id": task.id,
-            "description": task.description[:100] + ("..." if len(task.description) > 100 else ""),
+            "description": task.description,
             "mode": task.mode.value,
             "priority": task.priority.value,
             "status": task.status.value,
@@ -154,7 +154,7 @@ async def get_tasks_async(
         if task.progress_message:
             task_info["progress_message"] = task.progress_message
         if task.error:
-            task_info["error"] = task.error[:100]
+            task_info["error"] = task.error
         task_list.append(task_info)
     
     # Also get stats
