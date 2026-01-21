@@ -348,53 +348,64 @@ SUMMARY (be concise but preserve key details):"""
         logger.info(f"Augmented message with hippocampus recall ({len(memories)} chars)")
         return augmented
 
-    async def should_continue(
+    async def judge_response(
         self,
         original_request: str,
         agent_response: str,
         iteration: int,
-    ) -> bool:
-        """Judge whether the agent should continue working on a task.
+        is_continuation: bool,
+    ) -> dict:
+        """Judge an agent's response - whether to send it and whether to continue.
         
         Args:
             original_request: The user's original request
             agent_response: The agent's latest response (empty if no response)
             iteration: Current iteration number (0-based)
+            is_continuation: Whether this is a continuation prompt response
             
         Returns:
-            True if the agent should continue, False if task appears complete
+            Dict with keys:
+            - send_to_user: bool - whether this response should be sent to user
+            - continue_task: bool - whether to prompt agent to continue
+            - reason: str - brief explanation
         """
+        default_result = {"send_to_user": True, "continue_task": False, "reason": "default"}
+        
         if not self.enabled:
-            return False
+            return default_result
 
         try:
             agent_id = await self.get_or_create_agent()
             
-            # If no response and early iteration, likely needs continuation
+            # If no response and early iteration, continue but don't send
             if not agent_response and iteration <= 2:
-                return True
+                return {"send_to_user": False, "continue_task": True, "reason": "no response early iteration"}
             
-            # If no response and later iteration, probably done
+            # If no response and later iteration, stop
             if not agent_response:
-                return False
+                return {"send_to_user": False, "continue_task": False, "reason": "no response late iteration"}
             
             prompt = f"""USER REQUEST:
-{original_request[:1000]}
+{original_request}
 
 AGENT'S LATEST RESPONSE:
-{agent_response[:2000]}
+{agent_response}
 
 ITERATION: {iteration}
+IS_CONTINUATION_RESPONSE: {is_continuation}
 
-Question: Has the agent COMPLETED the user's request, or does it still need to continue working?
+Judge this response:
 
-Consider:
-- Did the agent provide final results/findings?
-- Did the agent say it will do something next (future intent)?
-- Is this a natural stopping point?
+1. SEND_TO_USER: Should this response be shown to the user?
+   - YES if: contains useful information, results, findings, or meaningful update
+   - NO if: just acknowledging continuation, saying "nothing to do", meta-commentary about the task itself
+
+2. CONTINUE_TASK: Should the agent continue working?
+   - YES if: agent expressed intent to do more, task clearly incomplete
+   - NO if: agent provided final results, natural stopping point, or said there's nothing more to do
 
 Respond with JSON only:
-{{"continue": true/false, "reason": "brief explanation"}}"""
+{{"send_to_user": true/false, "continue_task": true/false, "reason": "brief explanation"}}"""
 
             response = await self.client.agents.messages.create(
                 agent_id=agent_id,
@@ -416,8 +427,8 @@ Respond with JSON only:
                     break
 
             if not result_text:
-                logger.warning("Hippocampus continuation check returned no response")
-                return False
+                logger.warning("Hippocampus judge_response returned no response")
+                return default_result
 
             # Parse JSON
             try:
@@ -428,14 +439,15 @@ Respond with JSON only:
                 if json_match:
                     result = json.loads(json_match.group())
                 else:
-                    logger.warning(f"Hippocampus continuation check invalid JSON: {result_text[:200]}")
-                    return False
+                    logger.warning(f"Hippocampus judge_response invalid JSON: {result_text}")
+                    return default_result
 
-            should_continue = result.get("continue", False)
+            send_to_user = result.get("send_to_user", True)
+            continue_task = result.get("continue_task", False)
             reason = result.get("reason", "")
-            logger.info(f"Hippocampus continuation judgment: continue={should_continue}, reason={reason}")
-            return should_continue
+            logger.info(f"Hippocampus judgment: send={send_to_user}, continue={continue_task}, reason={reason}")
+            return {"send_to_user": send_to_user, "continue_task": continue_task, "reason": reason}
 
         except Exception as e:
-            logger.warning(f"Hippocampus continuation check failed: {e}")
-            return False
+            logger.warning(f"Hippocampus judge_response failed: {e}")
+            return default_result
