@@ -1098,32 +1098,6 @@ I'll update this as I learn about my principal's current projects and priorities
                         logger.info(f"  Assistant content ({len(content)} chars)")
                         current_iteration_response = content
                         current_iteration_has_response = True
-                        
-                        # Filter out "nothing to do" responses from continuation prompts
-                        content_lower = content.lower()
-                        is_empty_continuation = (
-                            continuation_count > 0 and 
-                            len(content) < 300 and
-                            any(phrase in content_lower for phrase in [
-                                "no further action", "no action available", "nothing to do",
-                                "nothing further", "no additional", "task is complete",
-                                "already complete", "nothing more", "no more action",
-                                "nothing for me to do", "genuinely nothing", "no action needed",
-                                "nothing else to", "no actions to", "completed the task",
-                            ])
-                        )
-                        
-                        if is_empty_continuation:
-                            logger.info("  Filtered empty continuation response")
-                            continue  # Don't send or accumulate this response
-                        
-                        result_parts.append(content)
-                        # Send message immediately via callback if provided
-                        if on_message:
-                            try:
-                                await on_message(content)
-                            except Exception as e:
-                                logger.warning(f"on_message callback failed: {e}")
                 
                 # Also try to capture text from other message types
                 elif msg_type == "tool_return_message":
@@ -1158,6 +1132,15 @@ I'll update this as I learn about my principal's current projects and priorities
 
             # Check if we're done
             if stop_reason == "requires_approval" and approvals_needed:
+                # During tool execution, send assistant messages immediately (agent explains what it's doing)
+                if current_iteration_has_response:
+                    result_parts.append(current_iteration_response)
+                    if on_message:
+                        try:
+                            await on_message(current_iteration_response)
+                        except Exception as e:
+                            logger.warning(f"on_message callback failed: {e}")
+                
                 # Send tool results back - MUST complete to avoid leaving agent in pending state
                 logger.info(f"Sending {len(approvals_needed)} tool results back to agent")
                 messages = [{
@@ -1166,19 +1149,29 @@ I'll update this as I learn about my principal's current projects and priorities
                 }]
                 continue
             
-            # Agent ended turn - use hippocampus to judge if we should continue
-            if stop_reason == "end_turn" and continuation_count < max_continuations:
-                # Get original request from context or first message
+            # Use hippocampus to judge response and decide next steps
+            if stop_reason == "end_turn":
                 original_request = context.get("_original_request", message) if context else message
                 
-                # Ask hippocampus if we should continue
-                needs_continuation = await self.hippocampus.should_continue(
+                # Ask hippocampus to judge this response
+                judgment = await self.hippocampus.judge_response(
                     original_request=original_request,
                     agent_response=current_iteration_response,
                     iteration=iteration,
+                    is_continuation=(continuation_count > 0),
                 )
                 
-                if needs_continuation:
+                # Send to user if hippocampus approves
+                if judgment["send_to_user"] and current_iteration_has_response:
+                    result_parts.append(current_iteration_response)
+                    if on_message:
+                        try:
+                            await on_message(current_iteration_response)
+                        except Exception as e:
+                            logger.warning(f"on_message callback failed: {e}")
+                
+                # Continue if hippocampus says so and we haven't hit limit
+                if judgment["continue_task"] and continuation_count < max_continuations:
                     continuation_count += 1
                     logger.info(f"Hippocampus says continue ({continuation_count}/{max_continuations})")
                     messages = [{"role": "user", "content": "[SYSTEM] Continue."}]
