@@ -398,14 +398,16 @@ Judge this response:
 
 1. SEND_TO_USER: Should this response be shown to the user?
    - YES if: agent is talking TO the user (direct address, "you", "your", answers, confirmations)
-   - NO if: agent is talking ABOUT the user in third person (using their name instead of "you") - this is internal reflection that leaked
+   - NO if: agent is talking ABOUT the user in third person (using their name instead of "you") - this is internal reflection
    - NO if: meta-commentary about the task itself, thinking out loud
 
-   Key test: Is the agent addressing the user directly, or thinking to itself?
-
 2. CONTINUE_TASK: Should the agent continue working?
-   - YES if: agent expressed clear intent to do more, task obviously incomplete
-   - NO if: action completed, natural stopping point, nothing more to do
+   - YES if: agent expressed clear intent to do more AND task is obviously incomplete
+   - NO if: action completed, natural stopping point, or nothing more to do
+   - NO if: send_to_user is false (if we're not sending the response, there's no point continuing)
+
+IMPORTANT: If the response shouldn't be sent to user, almost always set continue_task=false too.
+The only exception is during active tool execution where agent is working but hasn't reported yet.
 
 Respond with JSON only:
 {{"send_to_user": true/false, "continue_task": true/false, "reason": "brief explanation"}}"""
