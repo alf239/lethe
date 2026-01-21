@@ -1069,12 +1069,9 @@ I'll update this as I learn about my principal's current projects and priorities
                 elif "No tool call is currently awaiting approval" in error_str:
                     # Agent state changed - our tool results are stale
                     # This can happen if we're sending approval responses but agent moved on
-                    logger.warning("Agent not expecting tool results (state changed), retrying as regular message...")
-                    # Convert back to regular message if possible
-                    if messages and messages[0].get("type") == "approval":
-                        # Can't easily recover - just return what we have
-                        logger.warning("Cannot recover - agent state mismatch")
-                        break
+                    logger.warning("Agent not expecting tool results (state changed), prompting continuation...")
+                    # Send a continuation prompt instead of breaking
+                    messages = [{"role": "user", "content": "[SYSTEM] Continue with the task."}]
                     continue
                 else:
                     raise
