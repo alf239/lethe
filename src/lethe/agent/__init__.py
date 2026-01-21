@@ -1089,6 +1089,7 @@ I'll update this as I learn about my principal's current projects and priorities
 
             # Collect assistant messages and approval requests
             approvals_needed = []
+            current_iteration_has_response = False
             for msg in response.messages:
                 msg_type = getattr(msg, "message_type", None)
                 logger.info(f"  Message type: {msg_type}, attrs: {[a for a in dir(msg) if not a.startswith('_')]}")
@@ -1098,6 +1099,7 @@ I'll update this as I learn about my principal's current projects and priorities
                     if content:
                         logger.info(f"  Assistant content: {content[:200]}...")
                         result_parts.append(content)
+                        current_iteration_has_response = True
                         # Send message immediately via callback if provided
                         if on_message:
                             try:
@@ -1147,21 +1149,31 @@ I'll update this as I learn about my principal's current projects and priorities
                 continue
             
             # Agent ended turn - check if we should prompt continuation
-            if stop_reason == "end_turn" and result_parts and continuation_count < max_continuations:
-                last_response = result_parts[-1].lower() if result_parts else ""
+            if stop_reason == "end_turn" and continuation_count < max_continuations:
+                needs_continuation = False
                 
-                # Detect if agent indicates more work to do
-                continuation_indicators = [
-                    "let me ", "i'll ", "i will ", "now i", "next i", 
-                    "continuing", "working on", "proceeding", "starting",
-                    "first,", "then,", "after that", "step 1", "step 2",
-                ]
-                needs_continuation = any(ind in last_response for ind in continuation_indicators)
+                # Case 1: Agent executed tools this iteration but gave no response - likely incomplete
+                if iteration > 0 and not current_iteration_has_response:
+                    needs_continuation = True
+                    logger.info("Agent executed tools but gave no response this iteration - prompting continuation")
+                
+                # Case 2: Agent's response indicates more work to do
+                elif current_iteration_has_response and result_parts:
+                    last_response = result_parts[-1].lower()
+                    continuation_indicators = [
+                        "let me ", "i'll ", "i will ", "now i", "next i", 
+                        "continuing", "working on", "proceeding", "starting",
+                        "first,", "then,", "after that", "step 1", "step 2",
+                        "opening", "searching", "loading", "checking",
+                    ]
+                    if any(ind in last_response for ind in continuation_indicators):
+                        needs_continuation = True
+                        logger.info(f"Detected continuation indicator in response")
                 
                 if needs_continuation:
                     continuation_count += 1
-                    logger.info(f"Detected incomplete task, sending continuation prompt ({continuation_count}/{max_continuations})")
-                    messages = [{"role": "user", "content": "[SYSTEM] Continue with the task."}]
+                    logger.info(f"Sending continuation prompt ({continuation_count}/{max_continuations})")
+                    messages = [{"role": "user", "content": "[SYSTEM] Continue with the task. What did you find? What's next?"}]
                     continue
             
             logger.info(f"Exiting loop: stop_reason={stop_reason}, continuations={continuation_count}")
