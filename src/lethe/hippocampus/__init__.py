@@ -347,3 +347,95 @@ SUMMARY (be concise but preserve key details):"""
         
         logger.info(f"Augmented message with hippocampus recall ({len(memories)} chars)")
         return augmented
+
+    async def should_continue(
+        self,
+        original_request: str,
+        agent_response: str,
+        iteration: int,
+    ) -> bool:
+        """Judge whether the agent should continue working on a task.
+        
+        Args:
+            original_request: The user's original request
+            agent_response: The agent's latest response (empty if no response)
+            iteration: Current iteration number (0-based)
+            
+        Returns:
+            True if the agent should continue, False if task appears complete
+        """
+        if not self.enabled:
+            return False
+
+        try:
+            agent_id = await self.get_or_create_agent()
+            
+            # If no response and early iteration, likely needs continuation
+            if not agent_response and iteration <= 2:
+                return True
+            
+            # If no response and later iteration, probably done
+            if not agent_response:
+                return False
+            
+            prompt = f"""USER REQUEST:
+{original_request[:1000]}
+
+AGENT'S LATEST RESPONSE:
+{agent_response[:2000]}
+
+ITERATION: {iteration}
+
+Question: Has the agent COMPLETED the user's request, or does it still need to continue working?
+
+Consider:
+- Did the agent provide final results/findings?
+- Did the agent say it will do something next (future intent)?
+- Is this a natural stopping point?
+
+Respond with JSON only:
+{{"continue": true/false, "reason": "brief explanation"}}"""
+
+            response = await self.client.agents.messages.create(
+                agent_id=agent_id,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            # Extract response
+            result_text = None
+            for msg in response.messages:
+                if hasattr(msg, 'message_type') and msg.message_type == 'assistant_message':
+                    content = msg.content
+                    if isinstance(content, str):
+                        result_text = content
+                    elif isinstance(content, list):
+                        for part in content:
+                            if hasattr(part, 'text'):
+                                result_text = part.text
+                                break
+                    break
+
+            if not result_text:
+                logger.warning("Hippocampus continuation check returned no response")
+                return False
+
+            # Parse JSON
+            try:
+                result = json.loads(result_text)
+            except json.JSONDecodeError:
+                import re
+                json_match = re.search(r'\{[^{}]*\}', result_text)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    logger.warning(f"Hippocampus continuation check invalid JSON: {result_text[:200]}")
+                    return False
+
+            should_continue = result.get("continue", False)
+            reason = result.get("reason", "")
+            logger.info(f"Hippocampus continuation judgment: continue={should_continue}, reason={reason}")
+            return should_continue
+
+        except Exception as e:
+            logger.warning(f"Hippocampus continuation check failed: {e}")
+            return False
