@@ -119,13 +119,21 @@ async def run():
     # Callback to notify user when a background task completes
     async def on_task_complete(task):
         if primary_user_id:
-            status_emoji = "✅" if task.status.value == "completed" else "❌"
-            msg = f"{status_emoji} Background task completed: {task.description[:50]}..."
-            if task.result:
-                msg += f"\n\nResult: {task.result[:500]}"
-            if task.error:
-                msg += f"\n\nError: {task.error[:200]}"
-            await telegram_bot.send_message(primary_user_id, msg)
+            try:
+                status_emoji = "✅" if task.status.value == "completed" else "❌"
+                msg = f"{status_emoji} Background task completed: {task.description[:50]}..."
+                if task.result:
+                    # Truncate very long results but give more context (2000 chars)
+                    result_preview = task.result[:2000]
+                    if len(task.result) > 2000:
+                        result_preview += f"\n\n... (truncated, {len(task.result)} chars total)"
+                    msg += f"\n\nResult:\n{result_preview}"
+                if task.error:
+                    msg += f"\n\nError: {task.error[:500]}"
+                await telegram_bot.send_message(primary_user_id, msg)
+                logger.info(f"Sent task completion notification for {task.id}")
+            except Exception as e:
+                logger.error(f"Failed to send task completion notification: {e}")
     
     bg_task_worker = TaskWorker(
         task_manager=bg_task_manager,
