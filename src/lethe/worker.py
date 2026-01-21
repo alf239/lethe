@@ -37,6 +37,8 @@ class Worker:
         self.task_manager = task_manager  # For background task tools
         self.settings = settings or get_settings()
         self._running = False
+        self._current_task = None  # Currently processing task
+        self._cancel_requested = False  # Flag to cancel current task
 
     async def start(self):
         """Start the worker loop."""
@@ -55,6 +57,8 @@ class Worker:
                     continue  # Timeout, check if still running
 
                 logger.info(f"Processing task {task.id}: {task.message[:50]}...")
+                self._current_task = task
+                self._cancel_requested = False
 
                 try:
                     # Set Telegram context for tools that need to send files
@@ -79,6 +83,10 @@ class Worker:
                             text=content,
                         )
                     
+                    # Add cancellation check to context
+                    context = task.metadata.copy() if task.metadata else {}
+                    context["_cancel_check"] = self.is_cancel_requested
+                    
                     # Use aiogram's ChatActionSender to show typing indicator
                     async with ChatActionSender.typing(
                         bot=self.telegram_bot.bot,
@@ -88,7 +96,7 @@ class Worker:
                         # Send to agent with streaming callback
                         response = await self.agent_manager.send_message(
                             message=task.message,
-                            context=task.metadata,
+                            context=context,
                             on_message=on_message,
                         )
 
@@ -115,9 +123,10 @@ class Worker:
                         text=f"❌ Task failed: {e}",
                     )
                 finally:
-                    # Clear contexts
+                    # Clear contexts and current task
                     clear_telegram_context()
                     clear_task_context()
+                    self._current_task = None
 
             except asyncio.CancelledError:
                 logger.info("Worker cancelled")
@@ -131,6 +140,33 @@ class Worker:
     async def stop(self):
         """Stop the worker loop."""
         self._running = False
+
+    @property
+    def is_busy(self) -> bool:
+        """Check if worker is currently processing a task."""
+        return self._current_task is not None
+
+    @property
+    def current_task_preview(self) -> str:
+        """Get a preview of the current task."""
+        if self._current_task:
+            return self._current_task.message[:50] + "..." if len(self._current_task.message) > 50 else self._current_task.message
+        return ""
+
+    def request_cancel(self) -> bool:
+        """Request cancellation of current foreground task.
+        
+        Returns True if there was a task to cancel.
+        """
+        if self._current_task:
+            self._cancel_requested = True
+            logger.info(f"Cancel requested for task {self._current_task.id}")
+            return True
+        return False
+
+    def is_cancel_requested(self) -> bool:
+        """Check if cancellation was requested."""
+        return self._cancel_requested
 
 
 class HeartbeatWorker:

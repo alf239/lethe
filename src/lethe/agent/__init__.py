@@ -1043,11 +1043,17 @@ I'll update this as I learn about my principal's current projects and priorities
             messages = [{"role": "user", "content": formatted}]
         
         result_parts = []
-        max_iterations = 20  # Safety limit for tool call loops
-        max_continuations = 5  # Safety limit for end_turn continuations
+        max_iterations = 50  # Safety limit for tool call loops
+        max_continuations = 10  # Safety limit for end_turn continuations
         continuation_count = 0
         
         for iteration in range(max_iterations):
+            # Check for cancellation (via callback if provided in context)
+            cancel_check = context.get("_cancel_check") if context else None
+            if cancel_check and cancel_check():
+                logger.info("Task cancelled by user")
+                return "[Task cancelled by user]"
+            
             # Send to agent
             try:
                 response = await self.client.agents.messages.create(
@@ -1155,7 +1161,7 @@ I'll update this as I learn about my principal's current projects and priorities
                 if needs_continuation:
                     continuation_count += 1
                     logger.info(f"Detected incomplete task, sending continuation prompt ({continuation_count}/{max_continuations})")
-                    messages = [{"role": "user", "content": "[SYSTEM] Continue with the task. Don't explain what you're going to do - just do it using tools."}]
+                    messages = [{"role": "user", "content": "[SYSTEM] Continue with the task."}]
                     continue
             
             logger.info(f"Exiting loop: stop_reason={stop_reason}, continuations={continuation_count}")

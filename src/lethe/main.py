@@ -98,6 +98,9 @@ async def run():
 
     # Create message worker (passes task_manager for spawn_task tool)
     worker = Worker(task_queue, agent_manager, telegram_bot, bg_task_manager, settings)
+    
+    # Wire up worker reference for /stop command
+    telegram_bot.worker = worker
 
     # Create heartbeat worker if we have a primary user
     heartbeat = None

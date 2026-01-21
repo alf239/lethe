@@ -6,7 +6,7 @@ import io
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -35,11 +35,13 @@ class TelegramBot:
         task_queue: Optional[TaskQueue] = None,
         bg_task_manager: Optional["TaskManager"] = None,
         on_task_stopped: Optional[Callable] = None,  # Callback when task stopped via /stop
+        worker: Optional[Any] = None,  # Reference to foreground worker for cancellation
     ):
         self.settings = settings or get_settings()
         self.task_queue = task_queue
         self.bg_task_manager = bg_task_manager
         self.on_task_stopped = on_task_stopped  # async callback(task_ids: list[str])
+        self.worker = worker  # Foreground task worker
 
         self.bot = Bot(
             token=self.settings.telegram_bot_token,
@@ -95,8 +97,9 @@ class TelegramBot:
                 "Commands:\n"
                 "/status - Check message queue status\n"
                 "/list - Show background tasks\n"
-                "/stop - Stop all background tasks\n"
-                "/stop N - Stop specific task (N from /list)"
+                "/stop - Stop current foreground task\n"
+                "/stop all - Stop all background tasks\n"
+                "/stop N - Stop specific background task (N from /list)"
             )
 
         @self.dp.message(Command("status"))
@@ -147,8 +150,62 @@ class TelegramBot:
 
         @self.dp.message(Command("stop"))
         async def handle_stop(message: Message):
-            """Handle /stop command - stop background tasks."""
+            """Handle /stop command.
+            
+            /stop - Stop current foreground task
+            /stop all - Stop all background tasks
+            /stop N - Stop specific background task (N from /list)
+            """
             if not self._is_authorized(message.from_user.id):
+                return
+
+            args = message.text.split(maxsplit=1)
+            arg = args[1].strip().lower() if len(args) > 1 else ""
+            
+            # /stop (no args) - stop foreground task
+            if not arg:
+                if self.worker and self.worker.is_busy:
+                    self.worker.request_cancel()
+                    await message.answer(f"🛑 Stopping current task: {self.worker.current_task_preview}")
+                else:
+                    await message.answer("No foreground task running.")
+                return
+            
+            # /stop all - stop all background tasks
+            if arg == "all":
+                if not self.bg_task_manager:
+                    await message.answer("Background task manager not initialized.")
+                    return
+
+                from lethe.tasks import TaskStatus
+                tasks = await self.bg_task_manager.list_tasks(limit=20)
+                active_tasks = [t for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)]
+                
+                if not active_tasks:
+                    await message.answer("No active background tasks.")
+                    return
+
+                stopped_ids = []
+                for task in active_tasks:
+                    if await self.bg_task_manager.cancel_task(task.id):
+                        stopped_ids.append(task.id)
+
+                if stopped_ids:
+                    await message.answer(f"🛑 Stopped {len(stopped_ids)} background task(s).")
+                    if self.on_task_stopped:
+                        try:
+                            await self.on_task_stopped(stopped_ids, message.chat.id)
+                        except Exception as e:
+                            logger.warning(f"Error notifying agent: {e}")
+                else:
+                    await message.answer("Failed to stop tasks.")
+                return
+            
+            # /stop N - stop specific background task
+            try:
+                task_number = int(arg)
+            except ValueError:
+                await message.answer("Usage: /stop (foreground), /stop all (background), /stop N (specific)")
                 return
 
             if not self.bg_task_manager:
@@ -156,52 +213,23 @@ class TelegramBot:
                 return
 
             from lethe.tasks import TaskStatus
-            
-            # Parse argument (optional task number)
-            args = message.text.split(maxsplit=1)
-            task_number = None
-            if len(args) > 1:
-                try:
-                    task_number = int(args[1])
-                except ValueError:
-                    await message.answer("Usage: /stop or /stop N (where N is task number from /list)")
-                    return
-
-            # Get active tasks
             tasks = await self.bg_task_manager.list_tasks(limit=20)
             active_tasks = [t for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)]
-            
-            if not active_tasks:
-                await message.answer("No active background tasks to stop.")
+
+            if task_number < 1 or task_number > len(active_tasks):
+                await message.answer(f"Invalid task number. Use 1-{len(active_tasks)}.")
                 return
 
-            # Determine which tasks to stop
-            if task_number is not None:
-                if task_number < 1 or task_number > len(active_tasks):
-                    await message.answer(f"Invalid task number. Use 1-{len(active_tasks)}.")
-                    return
-                tasks_to_stop = [active_tasks[task_number - 1]]
-            else:
-                tasks_to_stop = active_tasks
-
-            # Stop the tasks
-            stopped_ids = []
-            for task in tasks_to_stop:
-                success = await self.bg_task_manager.cancel_task(task.id)
-                if success:
-                    stopped_ids.append(task.id)
-
-            if stopped_ids:
-                await message.answer(f"🛑 Stopped {len(stopped_ids)} task(s).")
-                
-                # Notify agent about stopped tasks
+            task = active_tasks[task_number - 1]
+            if await self.bg_task_manager.cancel_task(task.id):
+                await message.answer(f"🛑 Stopped background task: {task.description[:50]}...")
                 if self.on_task_stopped:
                     try:
-                        await self.on_task_stopped(stopped_ids, message.chat.id)
+                        await self.on_task_stopped([task.id], message.chat.id)
                     except Exception as e:
-                        logger.warning(f"Error notifying agent about stopped tasks: {e}")
+                        logger.warning(f"Error notifying agent: {e}")
             else:
-                await message.answer("Failed to stop tasks.")
+                await message.answer("Failed to stop task.")
 
         @self.dp.message(F.photo)
         async def handle_photo(message: Message):
