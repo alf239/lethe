@@ -1150,29 +1150,40 @@ I'll update this as I learn about my principal's current projects and priorities
             # Agent ended turn - check if we should prompt continuation
             if stop_reason == "end_turn" and continuation_count < max_continuations:
                 needs_continuation = False
+                response_lower = current_iteration_response.lower() if current_iteration_has_response else ""
                 
-                # Case 1: Agent executed tools this iteration but gave no response - likely incomplete
-                if iteration > 0 and not current_iteration_has_response:
+                # First check for completion signals - if found, don't continue
+                completion_indicators = [
+                    "done", "finished", "completed", "here's what", "here is what",
+                    "found the following", "results:", "summary:", "in conclusion",
+                    "hope this helps", "let me know if", "anything else",
+                    "that's all", "that's everything", "task complete",
+                ]
+                if any(ind in response_lower for ind in completion_indicators):
+                    logger.info("Detected completion indicator - not continuing")
+                    needs_continuation = False
+                
+                # Case 1: Agent executed tools but gave no response - only continue early in task
+                elif iteration > 0 and iteration <= 3 and not current_iteration_has_response:
                     needs_continuation = True
-                    logger.info("Agent executed tools but gave no response this iteration - prompting continuation")
+                    logger.info("Agent executed tools but gave no response (early iteration) - prompting continuation")
                 
-                # Case 2: Current response indicates more work to do
+                # Case 2: Response indicates INTENT to do more (future tense)
                 elif current_iteration_has_response:
-                    response_lower = current_iteration_response.lower()
+                    # These indicate future intent, not past actions
                     continuation_indicators = [
-                        "let me ", "i'll ", "i will ", "now i", "next i", 
-                        "continuing", "working on", "proceeding", "starting",
-                        "first,", "then,", "after that", "step 1", "step 2",
-                        "opening", "searching", "loading", "checking",
+                        "let me ", "i'll ", "i will ", "now i'll", "next i'll",
+                        "i'm going to", "i need to", "i should ",
+                        "first, i'll", "then i'll", "after that i'll",
                     ]
                     if any(ind in response_lower for ind in continuation_indicators):
                         needs_continuation = True
-                        logger.info(f"Detected continuation indicator in current response")
+                        logger.info(f"Detected continuation indicator (future intent) in response")
                 
                 if needs_continuation:
                     continuation_count += 1
                     logger.info(f"Sending continuation prompt ({continuation_count}/{max_continuations})")
-                    messages = [{"role": "user", "content": "[SYSTEM] Continue with the task. What did you find? What's next?"}]
+                    messages = [{"role": "user", "content": "[SYSTEM] Continue."}]
                     continue
             
             logger.info(f"Exiting loop: stop_reason={stop_reason}, continuations={continuation_count}")
