@@ -126,13 +126,10 @@ async def run():
                 status_emoji = "✅" if task.status.value == "completed" else "❌"
                 msg = f"{status_emoji} Background task completed: {task.description[:50]}..."
                 if task.result:
-                    # Truncate very long results but give more context (2000 chars)
-                    result_preview = task.result[:2000]
-                    if len(task.result) > 2000:
-                        result_preview += f"\n\n... (truncated, {len(task.result)} chars total)"
-                    msg += f"\n\nResult:\n{result_preview}"
+                    # Send full result - Telegram bot handles message splitting
+                    msg += f"\n\nResult:\n{task.result}"
                 if task.error:
-                    msg += f"\n\nError: {task.error[:500]}"
+                    msg += f"\n\nError: {task.error}"
                 await telegram_bot.send_message(primary_user_id, msg)
                 logger.info(f"Sent task completion notification for {task.id}")
             except Exception as e:

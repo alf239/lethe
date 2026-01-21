@@ -1090,6 +1090,7 @@ I'll update this as I learn about my principal's current projects and priorities
             # Collect assistant messages and approval requests
             approvals_needed = []
             current_iteration_has_response = False
+            current_iteration_response = ""
             for msg in response.messages:
                 msg_type = getattr(msg, "message_type", None)
                 logger.info(f"  Message type: {msg_type}, attrs: {[a for a in dir(msg) if not a.startswith('_')]}")
@@ -1097,8 +1098,9 @@ I'll update this as I learn about my principal's current projects and priorities
                 if msg_type == "assistant_message":
                     content = getattr(msg, "content", None)
                     if content:
-                        logger.info(f"  Assistant content: {content[:200]}...")
+                        logger.info(f"  Assistant content ({len(content)} chars)")
                         result_parts.append(content)
+                        current_iteration_response = content  # Track current iteration's response
                         current_iteration_has_response = True
                         # Send message immediately via callback if provided
                         if on_message:
@@ -1157,18 +1159,18 @@ I'll update this as I learn about my principal's current projects and priorities
                     needs_continuation = True
                     logger.info("Agent executed tools but gave no response this iteration - prompting continuation")
                 
-                # Case 2: Agent's response indicates more work to do
-                elif current_iteration_has_response and result_parts:
-                    last_response = result_parts[-1].lower()
+                # Case 2: Current response indicates more work to do
+                elif current_iteration_has_response:
+                    response_lower = current_iteration_response.lower()
                     continuation_indicators = [
                         "let me ", "i'll ", "i will ", "now i", "next i", 
                         "continuing", "working on", "proceeding", "starting",
                         "first,", "then,", "after that", "step 1", "step 2",
                         "opening", "searching", "loading", "checking",
                     ]
-                    if any(ind in last_response for ind in continuation_indicators):
+                    if any(ind in response_lower for ind in continuation_indicators):
                         needs_continuation = True
-                        logger.info(f"Detected continuation indicator in response")
+                        logger.info(f"Detected continuation indicator in current response")
                 
                 if needs_continuation:
                     continuation_count += 1
