@@ -1132,14 +1132,9 @@ I'll update this as I learn about my principal's current projects and priorities
 
             # Check if we're done
             if stop_reason == "requires_approval" and approvals_needed:
-                # During tool execution, send assistant messages immediately (agent explains what it's doing)
+                # Collect response but don't send - agent uses telegram_send_message to communicate
                 if current_iteration_has_response:
                     result_parts.append(current_iteration_response)
-                    if on_message:
-                        try:
-                            await on_message(current_iteration_response)
-                        except Exception as e:
-                            logger.warning(f"on_message callback failed: {e}")
                 
                 # Send tool results back - MUST complete to avoid leaving agent in pending state
                 logger.info(f"Sending {len(approvals_needed)} tool results back to agent")
@@ -1149,26 +1144,21 @@ I'll update this as I learn about my principal's current projects and priorities
                 }]
                 continue
             
-            # Use hippocampus to judge response and decide next steps
+            # Use hippocampus to judge if we should continue (agent sends messages via tool)
             if stop_reason == "end_turn":
+                # Collect response for logging/debugging
+                if current_iteration_has_response:
+                    result_parts.append(current_iteration_response)
+                
                 original_request = context.get("_original_request", message) if context else message
                 
-                # Ask hippocampus to judge this response
+                # Ask hippocampus if task needs continuation
                 judgment = await self.hippocampus.judge_response(
                     original_request=original_request,
                     agent_response=current_iteration_response,
                     iteration=iteration,
                     is_continuation=(continuation_count > 0),
                 )
-                
-                # Send to user if hippocampus approves
-                if judgment["send_to_user"] and current_iteration_has_response:
-                    result_parts.append(current_iteration_response)
-                    if on_message:
-                        try:
-                            await on_message(current_iteration_response)
-                        except Exception as e:
-                            logger.warning(f"on_message callback failed: {e}")
                 
                 # Continue if hippocampus says so and we haven't hit limit
                 if judgment["continue_task"] and continuation_count < max_continuations:

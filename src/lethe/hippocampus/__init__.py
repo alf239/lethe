@@ -355,21 +355,23 @@ SUMMARY (be concise but preserve key details):"""
         iteration: int,
         is_continuation: bool,
     ) -> dict:
-        """Judge an agent's response - whether to send it and whether to continue.
+        """Judge whether the agent should continue working.
+        
+        Note: Agent communicates with user via telegram_send_message tool,
+        so we only judge continuation, not what to send.
         
         Args:
             original_request: The user's original request
-            agent_response: The agent's latest response (empty if no response)
+            agent_response: The agent's latest response (train of thought)
             iteration: Current iteration number (0-based)
             is_continuation: Whether this is a continuation prompt response
             
         Returns:
             Dict with keys:
-            - send_to_user: bool - whether this response should be sent to user
             - continue_task: bool - whether to prompt agent to continue
             - reason: str - brief explanation
         """
-        default_result = {"send_to_user": True, "continue_task": False, "reason": "default"}
+        default_result = {"continue_task": False, "reason": "default"}
         
         if not self.enabled:
             return default_result
@@ -377,40 +379,31 @@ SUMMARY (be concise but preserve key details):"""
         try:
             agent_id = await self.get_or_create_agent()
             
-            # If no response and early iteration, continue but don't send
+            # If no response and early iteration, continue
             if not agent_response and iteration <= 2:
-                return {"send_to_user": False, "continue_task": True, "reason": "no response early iteration"}
+                return {"continue_task": True, "reason": "no response early iteration"}
             
             # If no response and later iteration, stop
             if not agent_response:
-                return {"send_to_user": False, "continue_task": False, "reason": "no response late iteration"}
+                return {"continue_task": False, "reason": "no response late iteration"}
             
             prompt = f"""USER REQUEST:
 {original_request}
 
-AGENT'S LATEST RESPONSE:
+AGENT'S TRAIN OF THOUGHT:
 {agent_response}
 
 ITERATION: {iteration}
-IS_CONTINUATION_RESPONSE: {is_continuation}
+IS_CONTINUATION: {is_continuation}
 
-Judge this response:
+Should the agent continue working on this task?
 
-1. SEND_TO_USER: Should this response be shown to the user?
-   - YES if: agent is talking TO the user (direct address, "you", "your", answers, confirmations)
-   - NO if: agent is talking ABOUT the user in third person (using their name instead of "you") - this is internal reflection
-   - NO if: meta-commentary about the task itself, thinking out loud
-
-2. CONTINUE_TASK: Should the agent continue working?
-   - YES if: agent expressed clear intent to do more AND task is obviously incomplete
-   - NO if: action completed, natural stopping point, or nothing more to do
-   - NO if: send_to_user is false (if we're not sending the response, there's no point continuing)
-
-IMPORTANT: If the response shouldn't be sent to user, almost always set continue_task=false too.
-The only exception is during active tool execution where agent is working but hasn't reported yet.
+- YES if: agent is actively working, expressed intent to do more, task clearly incomplete
+- NO if: agent completed the task, reached natural stopping point, or has nothing more to do
+- NO if: agent is just reflecting/thinking without making progress
 
 Respond with JSON only:
-{{"send_to_user": true/false, "continue_task": true/false, "reason": "brief explanation"}}"""
+{{"continue_task": true/false, "reason": "brief explanation"}}"""
 
             response = await self.client.agents.messages.create(
                 agent_id=agent_id,
@@ -447,11 +440,10 @@ Respond with JSON only:
                     logger.warning(f"Hippocampus judge_response invalid JSON: {result_text}")
                     return default_result
 
-            send_to_user = result.get("send_to_user", True)
             continue_task = result.get("continue_task", False)
             reason = result.get("reason", "")
-            logger.info(f"Hippocampus judgment: send={send_to_user}, continue={continue_task}, reason={reason}")
-            return {"send_to_user": send_to_user, "continue_task": continue_task, "reason": reason}
+            logger.info(f"Hippocampus judgment: continue={continue_task}, reason={reason}")
+            return {"continue_task": continue_task, "reason": reason}
 
         except Exception as e:
             logger.warning(f"Hippocampus judge_response failed: {e}")
