@@ -62,46 +62,6 @@ Clawd requires manual memory management through Markdown files and reactive comp
 - **Multiple agents** with different personas/roles
 - **Production gateway** with OAuth and webhook integrations
 
-## Heartbeats
-
-Lethe performs periodic check-ins (default: every 15 minutes) to maintain continuity and proactivity:
-
-**What happens during a heartbeat:**
-1. Reviews all memory blocks for pending tasks or reminders
-2. Scans recent conversation history for follow-up items
-3. Considers time-sensitive actions or proactive suggestions
-4. Sends a notification only if there's something genuinely useful to report
-
-**Identity Refresh:**
-Every 2 hours, the agent refreshes its identity context to stay aligned with its current persona and project state.
-
-Heartbeats ensure that even if you're away, Lethe stays aware of commitments and can surface them when relevant—turning a reactive chatbot into an active assistant.
-
-## Architecture
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Telegram   │────▶│  Task Queue │────▶│   Worker    │
-│    Bot      │     │  (SQLite)   │     │             │
-└─────────────┘     └─────────────┘     └──────┬──────┘
-                                               │
-                                               ▼
-                                        ┌─────────────┐
-                                        │   Letta     │
-                                        │   Agent     │
-                                        │  (memory +  │
-                                        │  reasoning) │
-                                        └──────┬──────┘
-                                               │
-                         ┌─────────────────────┼─────────────────────┐
-                         │                     │                     │
-                         ▼                     ▼                     ▼
-                  ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
-                  │ Filesystem  │       │    CLI      │       │   Browser   │
-                  │   Tools     │       │   Tools     │       │   Tools     │
-                  └─────────────┘       └─────────────┘       └─────────────┘
-```
-
 ## Quick Start
 
 ### 1. Prerequisites
@@ -154,6 +114,32 @@ Then set in `.env`:
 LETTA_BASE_URL=http://localhost:8283
 # LETTA_API_KEY not needed for local server
 ```
+
+## Architecture
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Telegram   │────▶│  Task Queue │────▶│   Worker    │
+│    Bot      │     │  (SQLite)   │     │             │
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+                                               ▼
+                                        ┌─────────────┐
+                                        │   Letta     │
+                                        │   Agent     │
+                                        │  (memory +  │
+                                        │  reasoning) │
+                                        └──────┬──────┘
+                                               │
+                         ┌─────────────────────┼─────────────────────┐
+                         │                     │                     │
+                         ▼                     ▼                     ▼
+                  ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
+                  │ Filesystem  │       │    CLI      │       │   Browser   │
+                  │   Tools     │       │   Tools     │       │   Tools     │
+                  └─────────────┘       └─────────────┘       └─────────────┘
+```
+
 
 ## Configuration
 
@@ -221,6 +207,22 @@ The agent has access to:
 - `archival_memory_search` - Search long-term memory by semantic similarity
 - `web_search` - Search the web for information
 - `fetch_webpage` - Fetch and read a webpage
+
+## Heartbeats
+
+Lethe performs periodic check-ins (default: every 15 minutes) to maintain continuity and proactivity:
+
+**What happens during a heartbeat:**
+1. Reviews all memory blocks for pending tasks or reminders
+2. Scans recent conversation history for follow-up items
+3. Considers time-sensitive actions or proactive suggestions
+4. Sends a notification only if there's something genuinely useful to report
+
+**Identity Refresh:**
+Every 2 hours, the agent refreshes its identity context to stay aligned with its current persona and project state.
+
+Heartbeats ensure that even if you're away, Lethe stays aware of commitments and can surface them when relevant—turning a reactive chatbot into an active assistant.
+
 
 ## Browser Setup (Steel)
 
