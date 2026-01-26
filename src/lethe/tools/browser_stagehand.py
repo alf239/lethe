@@ -37,6 +37,18 @@ def _get_api_key() -> str:
     return key
 
 
+def _get_profile_dir() -> str:
+    """Get the browser profile directory for persistent sessions."""
+    from pathlib import Path
+    
+    # Use a persistent profile directory in the project data folder
+    # This preserves cookies, localStorage, and login state across restarts
+    profile_dir = Path.home() / ".local" / "share" / "lethe" / "browser-profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    
+    return str(profile_dir)
+
+
 async def _get_session() -> str:
     """Get or create a Stagehand session. Returns session_id."""
     global _stagehand_client, _session_id, _cdp_url
@@ -47,6 +59,7 @@ async def _get_session() -> str:
     from stagehand import Stagehand
     
     api_key = _get_api_key()
+    profile_dir = _get_profile_dir()
     
     # Create client in local mode - uses bundled binary
     # Dummy values for browserbase params - not used in local mode
@@ -60,15 +73,16 @@ async def _get_session() -> str:
         local_ready_timeout_s=30.0,
     )
     
-    logger.info("Starting Stagehand local session...")
+    logger.info(f"Starting Stagehand local session (profile: {profile_dir})...")
     
-    # Start session with local browser
+    # Start session with local browser and persistent profile
     session = _stagehand_client.sessions.start(
         model_name="openai/gpt-4o",
         browser={
             "type": "local",
             "launchOptions": {
                 "headless": True,
+                "userDataDir": profile_dir,  # Persist cookies, localStorage, login state
             },
         },
     )
