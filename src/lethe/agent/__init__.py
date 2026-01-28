@@ -1164,7 +1164,14 @@ I'll update this as I learn about my principal's current projects and priorities
         continuation_count = 0
         
         for iteration in range(max_iterations):
-            # Check for cancellation (via callback if provided in context)
+            # Check for interrupt (new message arrived while processing)
+            interrupt_check = context.get("_interrupt_check") if context else None
+            if interrupt_check and interrupt_check():
+                logger.info("Processing interrupted (new message arrived)")
+                # Return special marker so caller knows this was interrupted, not completed
+                return "[INTERRUPTED]"
+            
+            # Legacy cancel check (for backwards compatibility)
             cancel_check = context.get("_cancel_check") if context else None
             if cancel_check and cancel_check():
                 logger.info("Task cancelled by user")

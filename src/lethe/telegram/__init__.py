@@ -16,7 +16,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import Message
 
 from lethe.config import Settings, get_settings
-from lethe.queue import TaskQueue
+from lethe.conversation import ConversationManager
 
 logger = logging.getLogger(__name__)
 
@@ -27,21 +27,21 @@ if TYPE_CHECKING:
 
 
 class TelegramBot:
-    """Async Telegram bot that queues messages for agent processing."""
+    """Async Telegram bot with interruptible conversation processing."""
 
     def __init__(
         self,
         settings: Optional[Settings] = None,
-        task_queue: Optional[TaskQueue] = None,
+        conversation_manager: Optional[ConversationManager] = None,
+        process_callback: Optional[Callable] = None,  # Async callback for processing messages
         bg_task_manager: Optional["TaskManager"] = None,
         on_task_stopped: Optional[Callable] = None,  # Callback when task stopped via /stop
-        worker: Optional[Any] = None,  # Reference to foreground worker for cancellation
     ):
         self.settings = settings or get_settings()
-        self.task_queue = task_queue
+        self.conversation_manager = conversation_manager
+        self.process_callback = process_callback  # async def(chat_id, user_id, message, metadata, interrupt_check)
         self.bg_task_manager = bg_task_manager
         self.on_task_stopped = on_task_stopped  # async callback(task_ids: list[str])
-        self.worker = worker  # Foreground task worker
 
         self.bot = Bot(
             token=self.settings.telegram_bot_token,
@@ -108,11 +108,13 @@ class TelegramBot:
             if not self._is_authorized(message.from_user.id):
                 return
 
-            if self.task_queue:
-                pending = await self.task_queue.get_pending_count()
-                await message.answer(f"Pending tasks: {pending}")
+            if self.conversation_manager:
+                is_processing = self.conversation_manager.is_processing(message.chat.id)
+                pending = self.conversation_manager.get_pending_count(message.chat.id)
+                status = "🔄 Processing" if is_processing else "✅ Ready"
+                await message.answer(f"Status: {status}\nPending messages: {pending}")
             else:
-                await message.answer("Queue not initialized.")
+                await message.answer("Conversation manager not initialized.")
 
         @self.dp.message(Command("list"))
         async def handle_list(message: Message):
@@ -164,9 +166,9 @@ class TelegramBot:
             
             # /stop (no args) - stop foreground task
             if not arg:
-                if self.worker and self.worker.is_busy:
-                    self.worker.request_cancel()
-                    await message.answer(f"🛑 Stopping current task: {self.worker.current_task_preview}")
+                if self.conversation_manager and self.conversation_manager.is_processing(message.chat.id):
+                    await self.conversation_manager.cancel(message.chat.id)
+                    await message.answer("🛑 Stopped current processing.")
                 else:
                     await message.answer("No foreground task running.")
                 return
@@ -238,7 +240,7 @@ class TelegramBot:
                 logger.warning(f"Unauthorized photo from user {message.from_user.id}")
                 return
 
-            if not self.task_queue:
+            if not self.conversation_manager:
                 await message.answer("System not ready. Please try again later.")
                 return
 
@@ -265,12 +267,12 @@ class TelegramBot:
                     ".webp": "image/webp",
                 }.get(ext, "image/jpeg")
                 
-                # Queue the task with base64 image data
+                # Add to conversation
                 caption = message.caption or f"[Image: {local_path.name}]"
-                task = await self.task_queue.enqueue(
+                await self.conversation_manager.add_message(
                     chat_id=message.chat.id,
                     user_id=message.from_user.id,
-                    message=caption,
+                    content=caption,
                     metadata={
                         "username": message.from_user.username,
                         "first_name": message.from_user.first_name,
@@ -282,18 +284,14 @@ class TelegramBot:
                             "media_type": media_type,
                         }],
                     },
+                    process_callback=self.process_callback,
                 )
             except Exception as e:
                 logger.error(f"Failed to process image: {e}", exc_info=True)
                 await message.answer("Sorry, failed to process the image. Please try again.")
                 return
 
-            # Only show queue position if there are multiple tasks
-            pending = await self.task_queue.get_pending_count()
-            if pending > 1:
-                await message.answer(f"📋 Queued (position: {pending})")
-
-            logger.info(f"Queued photo task {task.id} from user {message.from_user.id}")
+            logger.info(f"Photo from user {message.from_user.id}")
 
         @self.dp.message(F.document)
         async def handle_document(message: Message):
@@ -302,7 +300,7 @@ class TelegramBot:
                 logger.warning(f"Unauthorized document from user {message.from_user.id}")
                 return
 
-            if not self.task_queue:
+            if not self.conversation_manager:
                 await message.answer("System not ready. Please try again later.")
                 return
 
@@ -315,10 +313,10 @@ class TelegramBot:
 
                 # Queue the task with local path
                 caption = message.caption or f"[Document: {file_name}]"
-                task = await self.task_queue.enqueue(
+                await self.conversation_manager.add_message(
                     chat_id=message.chat.id,
                     user_id=message.from_user.id,
-                    message=caption,
+                    content=caption,
                     metadata={
                         "username": message.from_user.username,
                         "first_name": message.from_user.first_name,
@@ -330,18 +328,14 @@ class TelegramBot:
                             "mime_type": message.document.mime_type,
                         }],
                     },
+                    process_callback=self.process_callback,
                 )
             except Exception as e:
                 logger.error(f"Failed to process document: {e}", exc_info=True)
                 await message.answer("Sorry, failed to process the document. Please try again.")
                 return
 
-            # Only show queue position if there are multiple tasks
-            pending = await self.task_queue.get_pending_count()
-            if pending > 1:
-                await message.answer(f"📋 Queued (position: {pending})")
-
-            logger.info(f"Queued document task {task.id} from user {message.from_user.id}")
+            logger.info(f"Document from user {message.from_user.id}")
 
         @self.dp.message(F.audio)
         async def handle_audio(message: Message):
@@ -349,7 +343,7 @@ class TelegramBot:
             if not self._is_authorized(message.from_user.id):
                 return
 
-            if not self.task_queue:
+            if not self.conversation_manager:
                 await message.answer("System not ready. Please try again later.")
                 return
 
@@ -360,10 +354,10 @@ class TelegramBot:
                 local_path = await self.save_file_locally(file.file_path, file_name)
 
                 caption = message.caption or f"[Audio: {file_name}]"
-                task = await self.task_queue.enqueue(
+                await self.conversation_manager.add_message(
                     chat_id=message.chat.id,
                     user_id=message.from_user.id,
-                    message=caption,
+                    content=caption,
                     metadata={
                         "username": message.from_user.username,
                         "first_name": message.from_user.first_name,
@@ -376,16 +370,14 @@ class TelegramBot:
                             "duration": message.audio.duration,
                         }],
                     },
+                    process_callback=self.process_callback,
                 )
             except Exception as e:
                 logger.error(f"Failed to process audio: {e}", exc_info=True)
                 await message.answer("Sorry, failed to process the audio. Please try again.")
                 return
 
-            pending = await self.task_queue.get_pending_count()
-            if pending > 1:
-                await message.answer(f"📋 Queued (position: {pending})")
-            logger.info(f"Queued audio task {task.id} from user {message.from_user.id}")
+            logger.info(f"Audio from user {message.from_user.id}")
 
         @self.dp.message(F.voice)
         async def handle_voice(message: Message):
@@ -393,7 +385,7 @@ class TelegramBot:
             if not self._is_authorized(message.from_user.id):
                 return
 
-            if not self.task_queue:
+            if not self.conversation_manager:
                 await message.answer("System not ready. Please try again later.")
                 return
 
@@ -403,10 +395,10 @@ class TelegramBot:
                 
                 local_path = await self.save_file_locally(file.file_path, file_name)
 
-                task = await self.task_queue.enqueue(
+                await self.conversation_manager.add_message(
                     chat_id=message.chat.id,
                     user_id=message.from_user.id,
-                    message=f"[Voice message: {message.voice.duration}s]",
+                    content=f"[Voice message: {message.voice.duration}s]",
                     metadata={
                         "username": message.from_user.username,
                         "first_name": message.from_user.first_name,
@@ -417,16 +409,14 @@ class TelegramBot:
                             "duration": message.voice.duration,
                         }],
                     },
+                    process_callback=self.process_callback,
                 )
             except Exception as e:
                 logger.error(f"Failed to process voice: {e}", exc_info=True)
                 await message.answer("Sorry, failed to process the voice message. Please try again.")
                 return
 
-            pending = await self.task_queue.get_pending_count()
-            if pending > 1:
-                await message.answer(f"📋 Queued (position: {pending})")
-            logger.info(f"Queued voice task {task.id} from user {message.from_user.id}")
+            logger.info(f"Voice from user {message.from_user.id}")
 
         @self.dp.message(F.video)
         async def handle_video(message: Message):
@@ -434,7 +424,7 @@ class TelegramBot:
             if not self._is_authorized(message.from_user.id):
                 return
 
-            if not self.task_queue:
+            if not self.conversation_manager:
                 await message.answer("System not ready. Please try again later.")
                 return
 
@@ -445,10 +435,10 @@ class TelegramBot:
                 local_path = await self.save_file_locally(file.file_path, file_name)
 
                 caption = message.caption or f"[Video: {file_name}]"
-                task = await self.task_queue.enqueue(
+                await self.conversation_manager.add_message(
                     chat_id=message.chat.id,
                     user_id=message.from_user.id,
-                    message=caption,
+                    content=caption,
                     metadata={
                         "username": message.from_user.username,
                         "first_name": message.from_user.first_name,
@@ -461,16 +451,14 @@ class TelegramBot:
                             "duration": message.video.duration,
                         }],
                     },
+                    process_callback=self.process_callback,
                 )
             except Exception as e:
                 logger.error(f"Failed to process video: {e}", exc_info=True)
                 await message.answer("Sorry, failed to process the video. Please try again.")
                 return
 
-            pending = await self.task_queue.get_pending_count()
-            if pending > 1:
-                await message.answer(f"📋 Queued (position: {pending})")
-            logger.info(f"Queued video task {task.id} from user {message.from_user.id}")
+            logger.info(f"Video from user {message.from_user.id}")
 
         @self.dp.message(F.video_note)
         async def handle_video_note(message: Message):
@@ -478,7 +466,7 @@ class TelegramBot:
             if not self._is_authorized(message.from_user.id):
                 return
 
-            if not self.task_queue:
+            if not self.conversation_manager:
                 await message.answer("System not ready. Please try again later.")
                 return
 
@@ -488,10 +476,10 @@ class TelegramBot:
                 
                 local_path = await self.save_file_locally(file.file_path, file_name)
 
-                task = await self.task_queue.enqueue(
+                await self.conversation_manager.add_message(
                     chat_id=message.chat.id,
                     user_id=message.from_user.id,
-                    message=f"[Video note: {message.video_note.duration}s]",
+                    content=f"[Video note: {message.video_note.duration}s]",
                     metadata={
                         "username": message.from_user.username,
                         "first_name": message.from_user.first_name,
@@ -502,16 +490,14 @@ class TelegramBot:
                             "duration": message.video_note.duration,
                         }],
                     },
+                    process_callback=self.process_callback,
                 )
             except Exception as e:
                 logger.error(f"Failed to process video note: {e}", exc_info=True)
                 await message.answer("Sorry, failed to process the video note. Please try again.")
                 return
 
-            pending = await self.task_queue.get_pending_count()
-            if pending > 1:
-                await message.answer(f"📋 Queued (position: {pending})")
-            logger.info(f"Queued video_note task {task.id} from user {message.from_user.id}")
+            logger.info(f"Video note from user {message.from_user.id}")
 
         @self.dp.message(F.text)
         async def handle_message(message: Message):
@@ -520,28 +506,24 @@ class TelegramBot:
                 logger.warning(f"Unauthorized message from user {message.from_user.id}")
                 return
 
-            if not self.task_queue:
+            if not self.conversation_manager:
                 await message.answer("System not ready. Please try again later.")
                 return
 
-            # Queue the task
-            task = await self.task_queue.enqueue(
+            # Add to conversation (will start processing or queue for interrupt)
+            await self.conversation_manager.add_message(
                 chat_id=message.chat.id,
                 user_id=message.from_user.id,
-                message=message.text,
+                content=message.text,
                 metadata={
                     "username": message.from_user.username,
                     "first_name": message.from_user.first_name,
                     "message_id": message.message_id,
                 },
+                process_callback=self.process_callback,
             )
 
-            # Only show queue position if there are multiple tasks
-            pending = await self.task_queue.get_pending_count()
-            if pending > 1:
-                await message.answer(f"📋 Queued (position: {pending})")
-
-            logger.info(f"Queued task {task.id} from user {message.from_user.id}")
+            logger.info(f"Message from user {message.from_user.id}")
 
     def _is_authorized(self, user_id: int) -> bool:
         """Check if a user is authorized to use the bot."""
@@ -616,7 +598,12 @@ class TelegramBot:
 
 async def create_bot(
     settings: Optional[Settings] = None,
-    task_queue: Optional[TaskQueue] = None,
+    conversation_manager: Optional[ConversationManager] = None,
+    process_callback: Optional[Callable] = None,
 ) -> TelegramBot:
     """Create and return a TelegramBot instance."""
-    return TelegramBot(settings=settings, task_queue=task_queue)
+    return TelegramBot(
+        settings=settings,
+        conversation_manager=conversation_manager,
+        process_callback=process_callback,
+    )

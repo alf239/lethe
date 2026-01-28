@@ -11,7 +11,7 @@ from rich.logging import RichHandler
 
 from lethe.agent import AgentManager
 from lethe.config import get_settings
-from lethe.queue import TaskQueue
+from lethe.conversation import ConversationManager
 from lethe.tasks import TaskManager
 from lethe.tasks.worker import TaskWorker
 from lethe.telegram import TelegramBot
@@ -53,10 +53,9 @@ async def run():
     console.print(f"Agent name: {settings.lethe_agent_name}")
     console.print()
 
-    # Initialize components
-    task_queue = TaskQueue(settings.db_path)
-    await task_queue.initialize()
-    logger.info("Task queue initialized")
+    # Initialize conversation manager (replaces task queue for foreground)
+    conversation_manager = ConversationManager()
+    logger.info("Conversation manager initialized")
     
     # Initialize background task manager
     task_db_path = settings.db_path.parent / "tasks.db"
@@ -68,6 +67,9 @@ async def run():
     
     # Initialize agent to get ID (needed for callbacks)
     agent_id = await agent_manager.get_or_create_agent()
+    
+    # Create worker first (needed for process_callback)
+    worker = Worker(conversation_manager, agent_manager, None, bg_task_manager, settings)  # telegram_bot set later
     
     # Callback when user stops tasks via /stop command
     async def on_task_stopped(task_ids: list[str], chat_id: int):
@@ -91,16 +93,14 @@ async def run():
     
     telegram_bot = TelegramBot(
         settings, 
-        task_queue,
+        conversation_manager=conversation_manager,
+        process_callback=worker.process_message,
         bg_task_manager=bg_task_manager,
         on_task_stopped=on_task_stopped,
     )
-
-    # Create message worker (passes task_manager for spawn_task tool)
-    worker = Worker(task_queue, agent_manager, telegram_bot, bg_task_manager, settings)
     
-    # Wire up worker reference for /stop command
-    telegram_bot.worker = worker
+    # Wire up telegram_bot reference to worker
+    worker.telegram_bot = telegram_bot
 
     # Create heartbeat worker if we have a primary user
     heartbeat = None
@@ -196,7 +196,6 @@ async def run():
             except asyncio.CancelledError:
                 pass
         
-        await task_queue.close()
         await bg_task_manager.close()
         console.print("[green]Shutdown complete.[/green]")
 
