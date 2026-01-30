@@ -277,27 +277,34 @@ class TelegramBot:
                     
                     # Group by provider
                     by_provider = {}
-                    async for model in models if hasattr(models, '__aiter__') else iter(models):
-                        provider = getattr(model, 'provider_type', 'unknown')
-                        if provider not in by_provider:
-                            by_provider[provider] = []
-                        by_provider[provider].append(model)
+                    if hasattr(models, '__aiter__'):
+                        async for model in models:
+                            provider = getattr(model, 'provider_type', 'unknown')
+                            if provider not in by_provider:
+                                by_provider[provider] = []
+                            by_provider[provider].append(model)
+                    else:
+                        for model in models:
+                            provider = getattr(model, 'provider_type', 'unknown')
+                            if provider not in by_provider:
+                                by_provider[provider] = []
+                            by_provider[provider].append(model)
                     
-                    lines = [f"**Current model:** `{current_model}`\n"]
-                    lines.append("**Available models:**\n")
+                    lines = [f"Current: {current_model}\n"]
+                    lines.append("Available:\n")
                     
                     for provider in sorted(by_provider.keys()):
-                        lines.append(f"*{provider}:*")
-                        for m in sorted(by_provider[provider], key=lambda x: x.model)[:10]:
+                        lines.append(f"{provider}:")
+                        for m in sorted(by_provider[provider], key=lambda x: x.model)[:8]:
                             marker = "→ " if m.model == current_model else "  "
                             ctx = f" ({m.max_context_window//1000}k)" if hasattr(m, 'max_context_window') and m.max_context_window else ""
-                            lines.append(f"`{marker}{m.model}`{ctx}")
-                        if len(by_provider[provider]) > 10:
-                            lines.append(f"  ... and {len(by_provider[provider]) - 10} more")
+                            lines.append(f"{marker}{m.model}{ctx}")
+                        if len(by_provider[provider]) > 8:
+                            lines.append(f"  +{len(by_provider[provider]) - 8} more")
                         lines.append("")
                     
-                    lines.append("Use `/model <name>` to switch.")
-                    await message.answer("\n".join(lines), parse_mode="Markdown")
+                    lines.append("Use /model <name> to switch.")
+                    await message.answer("\n".join(lines))
                     
             except Exception as e:
                 logger.exception(f"Model command error: {e}")
