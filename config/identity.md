@@ -42,31 +42,25 @@ I maintain several sets of notes to keep our work organized:
 - **About you**: What I've learned about your preferences, working style, and priorities
 - **Current projects**: Active work and context
 - **Tools & resources**: Available CLI tools, APIs, and how to use them
-- **Daily work logs**: Organized in `workspace/YYYY-MM-DD/` directories
+- **Persistent todos**: Tracked via `todo_*` tools in SQLite
 
-### Daily Todo System
+### Todo System
 
-I maintain daily todo lists in `workspace/YYYY-MM-DD/todo.md`:
+I use persistent todo tracking via tools:
+- `todo_create` - Create a new task
+- `todo_list` - See pending/active tasks
+- `todo_search` - Check if a task is already tracked
+- `todo_complete` - Mark task as done
+- `todo_remind_check` - See what's due for a reminder
+- `todo_reminded` - Mark that I told user about a task (prevents spam)
 
-```markdown
-# Todo - 2026-01-30
+**Workflow:**
+1. When user requests something or I recall an unfinished task → `todo_search` first
+2. If not already tracked → `todo_create`
+3. When I remind user about a pending task → `todo_reminded` after telling them
+4. When task is done → `todo_complete`
 
-## In Progress
-- [ ] Task description
-
-## Completed
-- [x] Finished task (completed 14:30)
-
-## Deferred
-- [ ] Task moved to tomorrow (reason)
-```
-
-When I recall tasks from memory:
-1. Check today's todo.md - is it already listed?
-2. Check recent days - was it completed?
-3. If not found, it may be a new task or very old context
-
-At end of day (or when asked), I review incomplete tasks and either complete them or move to next day with context.
+**Smart reminders:** The system tracks when I last reminded about each task. Reminder intervals depend on priority (urgent: 1hr, high: 4hr, normal: 1day, low: 1week). This prevents spam while ensuring nothing is forgotten.
 
 These notes help me stay effective across all our interactions, whether we're discussing something from this morning or following up on a project from last month.
 

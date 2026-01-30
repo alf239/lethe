@@ -25,6 +25,7 @@ class AgentManager:
         self._tool_handlers: dict = {}  # Maps tool name to handler function
         self._agent_lock: asyncio.Lock = asyncio.Lock()  # Serialize agent access
         self._hippocampus: Optional["HippocampusManager"] = None
+        self._todo_manager: Optional["TodoManager"] = None
 
     @property
     def client(self) -> AsyncLetta:
@@ -46,6 +47,15 @@ class AgentManager:
             from lethe.hippocampus import HippocampusManager
             self._hippocampus = HippocampusManager(self.client, self.settings)
         return self._hippocampus
+
+    @property
+    def todo_manager(self) -> "TodoManager":
+        """Get or create the todo manager."""
+        if self._todo_manager is None:
+            from lethe.todos import TodoManager
+            db_path = self.settings.db_path.parent / "todos.db"
+            self._todo_manager = TodoManager(db_path)
+        return self._todo_manager
 
     async def get_recent_messages(self, limit: int = 10) -> list[dict]:
         """Get recent messages from the agent's conversation history.
@@ -408,6 +418,13 @@ I'll update this as I learn about my principal's current projects and priorities
         
         self._tool_handlers["list_my_tools"] = list_my_tools_async
         logger.info("Introspection tools registered")
+
+        # Add Todo management tools
+        from lethe.tools.todos import create_todo_tools
+        todo_tools = create_todo_tools(self.todo_manager)
+        for func, _ in todo_tools:
+            self._tool_handlers[func.__name__] = func
+        logger.info("Todo management tools registered")
 
     async def _register_tools(self) -> list[str]:
         """Register client-side tools with Letta. Returns list of tool names."""
@@ -853,6 +870,97 @@ I'll update this as I learn about my principal's current projects and priorities
             """
             raise Exception("Client-side execution required")
         
+        # Todo management tools
+        def todo_create(title: str, description: str = "", priority: str = "normal", due_date: str = "") -> str:
+            """Create a new todo/task to track.
+            
+            Use when: user requests something that takes time, you recall an unfinished task, or identify follow-up needed.
+            
+            Args:
+                title: Short task title (e.g., "Deploy to production")
+                description: Details about what needs to be done
+                priority: low, normal, high, or urgent
+                due_date: Optional due date in YYYY-MM-DD format
+                
+            Returns:
+                Confirmation with todo ID
+            """
+            raise Exception("Client-side execution required")
+        
+        def todo_list(status: str = "", priority: str = "", include_completed: bool = False) -> str:
+            """List todos/tasks.
+            
+            Use to see pending tasks, check if a recalled task is already tracked.
+            
+            Args:
+                status: Filter by status (pending, in_progress, completed, deferred, cancelled)
+                priority: Filter by priority (low, normal, high, urgent)
+                include_completed: Whether to include completed/cancelled tasks
+                
+            Returns:
+                Formatted list of todos
+            """
+            raise Exception("Client-side execution required")
+        
+        def todo_update(todo_id: int, status: str = "", priority: str = "", description: str = "", due_date: str = "") -> str:
+            """Update an existing todo.
+            
+            Args:
+                todo_id: ID of the todo to update
+                status: New status (pending, in_progress, completed, deferred, cancelled)
+                priority: New priority (low, normal, high, urgent)
+                description: New description
+                due_date: New due date (YYYY-MM-DD)
+                
+            Returns:
+                Confirmation or error
+            """
+            raise Exception("Client-side execution required")
+        
+        def todo_complete(todo_id: int) -> str:
+            """Mark a todo as completed.
+            
+            Args:
+                todo_id: ID of the todo to complete
+                
+            Returns:
+                Confirmation or error
+            """
+            raise Exception("Client-side execution required")
+        
+        def todo_search(query: str) -> str:
+            """Search todos by title or description. Check if task is already tracked before creating duplicate.
+            
+            Args:
+                query: Search text
+                
+            Returns:
+                Matching todos or "no matches"
+            """
+            raise Exception("Client-side execution required")
+        
+        def todo_remind_check() -> str:
+            """Check which todos are due for a reminder.
+            
+            Reminder intervals vary by priority (urgent: 1hr, high: 4hr, normal: 1day, low: 1week).
+            After reminding user, call todo_reminded(id) to prevent spam.
+            
+            Returns:
+                List of todos due for reminder
+            """
+            raise Exception("Client-side execution required")
+        
+        def todo_reminded(todo_id: int) -> str:
+            """Mark that you reminded the user about a todo. Call AFTER telling user about a task to prevent spam.
+            
+            Args:
+                todo_id: ID of the todo you reminded about
+                
+            Returns:
+                Confirmation
+            """
+            raise Exception("Client-side execution required")
+        
         stub_functions = [
             bash,
             bash_output,
@@ -891,6 +999,14 @@ I'll update this as I learn about my principal's current projects and priorities
             get_task_status,
             cancel_task,
             list_my_tools,
+            # Todo management tools
+            todo_create,
+            todo_list,
+            todo_update,
+            todo_complete,
+            todo_search,
+            todo_remind_check,
+            todo_reminded,
         ]
 
         for func in stub_functions:
