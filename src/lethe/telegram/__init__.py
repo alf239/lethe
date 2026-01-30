@@ -269,7 +269,7 @@ class TelegramBot:
                 if new_model:
                     # Switch model
                     await client.agents.update(agent_id, model=new_model)
-                    await message.answer(f"✅ Model switched to: `{new_model}`", parse_mode="Markdown")
+                    await message.answer(f"✅ Model switched to: {new_model}", parse_mode=None)
                     logger.info(f"Model switched from {current_model} to {new_model}")
                 else:
                     # List models
@@ -304,7 +304,7 @@ class TelegramBot:
                         lines.append("")
                     
                     lines.append("Use /model <name> to switch.")
-                    await message.answer("\n".join(lines))
+                    await message.answer("\n".join(lines), parse_mode=None)
                     
             except Exception as e:
                 logger.exception(f"Model command error: {e}")
