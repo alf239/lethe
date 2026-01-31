@@ -23,13 +23,13 @@ Build a **fully autonomous, personified AI assistant** that:
 - ⚡ **Operates 24/7** - Always available, processes tasks asynchronously in the background
 - 😈 **A little scary to operate** - Full system access, relentless self-improvement, YOLO
 
-## Comparison: Lethe vs Clawd
+## Comparison: Lethe vs OpenClaw
 
-Both Lethe and [Clawd](https://clawd.bot) are autonomous AI assistants, but differ in how they handle memory and context.
+Both Lethe and [OpenClaw](https://openclaw.ai/) are autonomous AI assistants, but differ in how they handle memory and context.
 
 ### Key Differences
 
-| Feature | Lethe | Clawd |
+| Feature | Lethe | OpenClaw |
 |---------|-------|-------|
 | **Token Economy** | **3-5x cheaper** - selective memory loading, accessibility-tree browsing, proactive compaction | Higher token consumption - full file injection, reactive compaction |
 | **Context Management** | **Letta integration** - automatic context engineering with 3-tier memory (working/episodic/archival) | Manual file-based memory (MEMORY.md, daily logs) with vector search |
@@ -49,7 +49,7 @@ Lethe uses [Letta](https://www.letta.com) for memory management, which means:
 - **Self-modification** - Agent edits its own persona, knowledge, and identity in real-time
 - **3-5x token savings** - Selective memory loading (1-3k tokens vs full history), accessibility-tree browsing (90% reduction), and proactive compaction result in significantly lower API costs
 
-Clawd requires manual memory management through Markdown files and reactive compaction when approaching context limits.
+OpenClaw requires manual memory management through Markdown files and reactive compaction when approaching context limits.
 
 ### Choose Lethe if you want:
 - **Automated context management** via Letta (no manual memory engineering)
@@ -58,7 +58,7 @@ Clawd requires manual memory management through Markdown files and reactive comp
 - **Persistent autonomous agent** that operates 24/7 with long-term memory
 - **Token-efficient operation** (accessibility tree, selective memory loading)
 
-### Choose Clawd if you want:
+### Choose OpenClaw if you want:
 - **Multi-platform messaging** (WhatsApp, iMessage, Signal, Discord, Telegram)
 - **File-based memory** you can manually inspect and edit
 - **Multiple agents** with different personas/roles
