@@ -202,29 +202,32 @@ detect_container_runtime() {
 
 prompt_tokens() {
     echo ""
-    echo -e "${YELLOW}Lethe needs two API tokens to work:${NC}"
-    echo ""
-    echo "1. Telegram Bot Token - Create a bot via @BotFather on Telegram"
-    echo "   https://t.me/BotFather → /newbot → copy the token"
-    echo ""
-    echo "2. Letta API Key - Sign up at https://app.letta.com"
-    echo "   Settings → API Keys → Create new key"
-    echo ""
-    echo "3. Your Telegram User ID - Message @userinfobot on Telegram"
-    echo "   It will reply with your user ID (a number like 123456789)"
+    echo -e "${YELLOW}Lethe needs a few things to get started:${NC}"
     echo ""
     
-    read -p "Telegram Bot Token: " TELEGRAM_TOKEN < /dev/tty
+    echo -e "${BLUE}1. Telegram Bot Token${NC}"
+    echo "   Create a bot: message @BotFather on Telegram → /newbot → copy the token"
+    echo ""
+    read -p "   Telegram Bot Token: " TELEGRAM_TOKEN < /dev/tty
     if [ -z "$TELEGRAM_TOKEN" ]; then
         error "Telegram token is required"
     fi
+    echo ""
     
-    read -p "Letta API Key: " LETTA_KEY < /dev/tty
+    echo -e "${BLUE}2. Letta API Key${NC}"
+    echo "   Sign up at https://app.letta.com → Settings → API Keys → Create new key"
+    echo ""
+    read -p "   Letta API Key: " LETTA_KEY < /dev/tty
     if [ -z "$LETTA_KEY" ]; then
         error "Letta API key is required"
     fi
+    echo ""
     
-    read -p "Your Telegram User ID: " TELEGRAM_USER_ID < /dev/tty
+    echo -e "${BLUE}3. Your Telegram User ID${NC}"
+    echo "   Message @userinfobot on Telegram - it replies with your ID (a number like 123456789)"
+    echo "   This restricts the bot to only respond to you. Leave blank to allow anyone."
+    echo ""
+    read -p "   Telegram User ID (or blank): " TELEGRAM_USER_ID < /dev/tty
     if [ -z "$TELEGRAM_USER_ID" ]; then
         warn "No user ID provided - bot will accept messages from anyone!"
     fi
@@ -417,10 +420,19 @@ install_contained() {
     
     RUNTIME=$(detect_container_runtime)
     if [ -z "$RUNTIME" ]; then
-        error "Docker or Podman is required for contained installation.
-        
-Install Docker: https://docs.docker.com/get-docker/
-Or Podman: https://podman.io/getting-started/installation"
+        echo -e "${RED}[ERROR]${NC} Docker or Podman is required for contained installation."
+        echo ""
+        echo "Install one of:"
+        echo ""
+        echo "  Podman (recommended for Linux):"
+        echo "    Fedora:       sudo dnf install podman"
+        echo "    Ubuntu/Debian: sudo apt install podman"
+        echo "    macOS:        brew install podman && podman machine init && podman machine start"
+        echo ""
+        echo "  Docker:"
+        echo "    All platforms: https://docs.docker.com/get-docker/"
+        echo ""
+        exit 1
     fi
     success "Container runtime: $RUNTIME"
     
