@@ -274,17 +274,17 @@ The agent has access to:
 - `get_environment_info` - Get system/environment info
 - `check_command_exists` - Check if a command is available
 
-### Browser (requires Steel)
-- `browser_navigate` - Navigate to a URL
-- `browser_get_context` - Get page context (accessibility tree, token-efficient)
-- `browser_get_text` - Get all visible text from page
-- `browser_click` - Click elements by selector or text
-- `browser_fill` - Fill input fields
-- `browser_extract_text` - Extract text from specific element
-- `browser_screenshot` - Take screenshots
+### Browser (via agent-browser)
+- `browser_open` - Open URL in browser
+- `browser_snapshot` - Get accessibility tree with element refs (@e1, @e2...)
+- `browser_click` - Click element by ref or text
+- `browser_fill` - Fill input field
+- `browser_type` - Type text (with keyboard shortcuts)
 - `browser_scroll` - Scroll the page
-- `browser_wait_for` - Wait for elements to appear
-- `browser_close` - Close browser session
+- `browser_screenshot` - Take screenshot (returned as image to chat)
+- `browser_close` - Close browser
+
+Browser automation uses [agent-browser](https://github.com/vercel-labs/agent-browser) which provides accessibility-tree based interaction - 90%+ more reliable than DOM selectors, 93% less context than raw HTML.
 
 ### Telegram
 - `telegram_send_message` - Send additional message to user
@@ -314,28 +314,21 @@ Every 2 hours, the agent refreshes its identity context to stay aligned with its
 Heartbeats ensure that even if you're away, Lethe stays aware of commitments and can surface them when relevant—turning a reactive chatbot into an active assistant.
 
 
-## Browser Setup (Steel)
+## Browser Automation
 
-Browser tools require Steel Browser running locally:
+Lethe uses [agent-browser](https://github.com/vercel-labs/agent-browser) for web automation. It's installed automatically by the installer.
 
-```bash
-# Option 1: Docker Compose (recommended)
-docker compose -f docker-compose.steel.yml up -d
+**How it works:**
+1. `browser_open` - Opens a URL
+2. `browser_snapshot` - Returns accessibility tree with refs like `@e1`, `@e2`
+3. `browser_click @e1` - Click by ref (deterministic, no AI guessing)
 
-# Option 2: Direct Docker
-docker run -d -p 3000:3000 -p 9223:9223 ghcr.io/steel-dev/steel-browser
+**Why accessibility tree?**
+- 90%+ reliability vs 60-70% with DOM selectors on complex UIs
+- 93% less context than raw HTML
+- Works reliably on dynamic sites like LinkedIn, Gmail, etc.
 
-# Install browser dependencies
-uv sync --extra browser
-playwright install chromium
-```
-
-Steel provides:
-- Persistent sessions (cookies, localStorage across requests)
-- Anti-bot protection and stealth
-- Session viewer at http://localhost:3000/ui
-
-The browser tools use the **Accessibility Tree** instead of raw DOM, reducing context sent to the LLM by ~90% while preserving semantic meaning.
+**Persistent sessions:** Use `--profile ~/.local/share/lethe/browser-profile` to maintain cookies/logins across sessions.
 
 ## Development
 
