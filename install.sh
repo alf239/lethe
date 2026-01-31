@@ -347,10 +347,10 @@ EOF
     echo ""
     echo -e "${GREEN}Next step:${NC} Open Telegram and message your bot!"
     echo ""
-    echo "Try saying:"
-    echo "  \"Hello! What can you do?\""
-    echo "  \"Remember that my favorite color is blue\""
-    echo "  \"What's my favorite color?\""
+    echo "Try:"
+    echo "  \"Hello! Tell me about yourself\""
+    echo "  \"Remind me to call mom tomorrow at 5pm\""
+    echo "  \"What tasks do I have pending?\""
 }
 
 setup_systemd() {
@@ -533,10 +533,10 @@ EOF
     echo ""
     echo -e "${GREEN}Next step:${NC} Open Telegram and message your bot!"
     echo ""
-    echo "Try saying:"
-    echo "  \"Hello! What can you do?\""
-    echo "  \"Remember that my favorite color is blue\""
-    echo "  \"What's my favorite color?\""
+    echo "Try:"
+    echo "  \"Hello! Tell me about yourself\""
+    echo "  \"Remind me to call mom tomorrow at 5pm\""
+    echo "  \"What tasks do I have pending?\""
 }
 
 # Main
