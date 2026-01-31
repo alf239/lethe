@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # Lethe Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/atemerev/lethe/main/install.sh | bash
+# Usage: curl -fsSL https://lethe.gg/install | bash
 #
+# Default: Contained install (Docker/Podman) - safer, limited filesystem access
 # Options:
-#   --contained    Install in Docker/Podman container (safer)
-#   --native       Install directly on host (default)
+#   --unsafe    Install directly on host (full system access)
 #
 
 set -e
@@ -23,14 +23,10 @@ INSTALL_DIR="${LETHE_INSTALL_DIR:-$HOME/.lethe}"
 CONFIG_DIR="${LETHE_CONFIG_DIR:-$HOME/.config/lethe}"
 
 # Parse args
-INSTALL_MODE="native"
+INSTALL_MODE="contained"
 for arg in "$@"; do
     case $arg in
-        --contained)
-            INSTALL_MODE="contained"
-            shift
-            ;;
-        --native)
+        --unsafe)
             INSTALL_MODE="native"
             shift
             ;;
@@ -40,9 +36,10 @@ for arg in "$@"; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --native      Install directly on host (default)"
-            echo "  --contained   Install in Docker/Podman container (safer)"
-            echo "  --help        Show this help"
+            echo "  --unsafe    Install directly on host (full system access)"
+            echo "  --help      Show this help"
+            echo ""
+            echo "Default: Contained install (Docker/Podman) - safer, limited access"
             exit 0
             ;;
     esac
