@@ -418,6 +418,13 @@ EOF
 install_contained() {
     info "Installing in container mode (safety first)..."
     
+    OS=$(detect_os)
+    
+    # On Mac, ensure Homebrew is available for easy podman/docker install
+    if [[ "$OS" == "mac" ]]; then
+        install_homebrew
+    fi
+    
     RUNTIME=$(detect_container_runtime)
     if [ -z "$RUNTIME" ]; then
         echo -e "${RED}[ERROR]${NC} Docker or Podman is required for contained installation."
