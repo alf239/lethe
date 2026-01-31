@@ -53,10 +53,13 @@ echo "╚═══════════════════════�
 echo -e "${NC}"
 echo ""
 echo "This will remove:"
-echo "  - Lethe installation: $INSTALL_DIR"
-echo "  - Configuration: $CONFIG_DIR"
 echo "  - System service (systemd/launchd)"
-echo "  - Container (if installed with --contained)"
+echo "  - Container and image (if using safe mode)"
+echo "  - Installation scripts: $INSTALL_DIR"
+echo ""
+echo "This will NOT remove:"
+echo "  - Your data: ~/lethe/"
+echo "  - Your config: $CONFIG_DIR"
 echo ""
 read -p "Are you sure you want to uninstall Lethe? [y/N] " -n 1 -r < /dev/tty
 echo ""
@@ -112,27 +115,12 @@ if [ -d "$INSTALL_DIR" ]; then
     success "Installation directory removed"
 fi
 
-# Ask about config/data
-if [ -d "$CONFIG_DIR" ]; then
-    echo ""
-    read -p "Remove configuration and data? (includes .env with tokens) [y/N] " -n 1 -r < /dev/tty
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm -rf "$CONFIG_DIR"
-        success "Configuration removed"
-    else
-        warn "Configuration kept at: $CONFIG_DIR"
-    fi
-fi
-
-# Remove logs (Mac)
-if [ "$OS" = "mac" ]; then
-    rm -f "$HOME/Library/Logs/lethe.log" 2>/dev/null
-    rm -f "$HOME/Library/Logs/lethe.error.log" 2>/dev/null
-fi
-
 echo ""
 success "Lethe has been uninstalled."
 echo ""
+echo "Your data and config are preserved at:"
+echo "  ~/lethe/          - workspace and databases"
+echo "  $CONFIG_DIR       - API tokens"
+echo ""
 echo "To reinstall:"
-echo "  curl -fsSL https://raw.githubusercontent.com/atemerev/lethe/main/install.sh | bash"
+echo "  curl -fsSL https://lethe.gg/install | bash"
