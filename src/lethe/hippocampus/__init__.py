@@ -221,10 +221,6 @@ JSON only:"""
         """
         results = []
         
-        # Truncate query to avoid BM25 limit (max 1024 Unicode code points)
-        if len(query) > 1000:
-            query = query[:1000]
-        
         try:
             # Search archival memory (passages) - semantic search
             archival_results = await self.client.agents.passages.search(
@@ -413,11 +409,25 @@ SUMMARY (be concise but preserve key details):"""
                 context_parts.append(content)
         context_parts.append(new_message)
         
-        # Use full context as search query (pattern completion input)
-        search_context = "\n".join(context_parts)
+        # Build search query - prioritize new message, add context within limit
+        # BM25 has 1024 char limit, so we budget carefully
+        MAX_QUERY_LEN = 900
+        
+        # New message is most important - keep up to 500 chars
+        new_msg_budget = min(len(new_message), 500)
+        search_query = new_message[:new_msg_budget]
+        
+        # Add context from remaining budget (most recent first)
+        remaining = MAX_QUERY_LEN - len(search_query) - 10  # buffer for separator
+        if remaining > 50 and context_parts[:-1]:  # exclude new_message from context
+            context_text = "\n".join(context_parts[:-1])
+            # Take the tail (most recent context)
+            if len(context_text) > remaining:
+                context_text = "..." + context_text[-(remaining-3):]
+            search_query = context_text + "\n\n" + search_query
         
         # Search memories using semantic similarity
-        memories = await self.search_memories(main_agent_id, search_context)
+        memories = await self.search_memories(main_agent_id, search_query)
         
         if not memories:
             return new_message
