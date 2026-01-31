@@ -485,8 +485,8 @@ $RUNTIME run -d \\
     --name lethe \\
     --restart unless-stopped \\
     --env-file "$CONFIG_DIR/.env" \\
-    -v "$INSTALL_DIR/workspace:/app/workspace" \\
-    -v "$INSTALL_DIR/data:/app/data" \\
+    -v "$INSTALL_DIR/workspace:/app/workspace:Z" \\
+    -v "$INSTALL_DIR/data:/app/data:Z" \\
     lethe:latest
 EOF
     chmod +x "$INSTALL_DIR/run-lethe.sh"
