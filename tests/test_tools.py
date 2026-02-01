@@ -566,33 +566,99 @@ class TestGetToolByName:
 # Browser Tools Tests (Async)
 # ============================================================================
 
+def _check_agent_browser():
+    """Check if agent-browser is available."""
+    import shutil
+    if not shutil.which("agent-browser"):
+        pytest.skip("agent-browser not installed")
+
+
 class TestBrowserToolsAsync:
-    """Tests for browser tools (async)."""
+    """Tests for browser tools (async).
+    
+    These tests require agent-browser CLI to be installed.
+    Run: npm install -g agent-browser
+    """
+    
+    @pytest.mark.asyncio
+    async def test_browser_open_valid_url(self):
+        """Should open a valid URL."""
+        _check_agent_browser()
+        from lethe.tools import browser_open
+        import json
+        
+        result = await browser_open("https://example.com")
+        
+        # Should return JSON
+        data = json.loads(result)
+        assert data.get("status") == "OK" or "error" in data.get("status", "").lower()
     
     @pytest.mark.asyncio
     async def test_browser_open_invalid_url(self):
         """Should handle invalid URL gracefully."""
+        _check_agent_browser()
         from lethe.tools import browser_open
+        import json
         
-        # This may fail if agent-browser is not installed
-        try:
-            result = await browser_open("not-a-valid-url")
-            # Should return some kind of error or result
-            assert isinstance(result, (str, dict))
-        except Exception as e:
-            # Expected if agent-browser not installed
-            pytest.skip(f"Browser tool not available: {e}")
+        result = await browser_open("not-a-valid-url")
+        data = json.loads(result)
+        
+        # Should return error status, not crash
+        assert isinstance(data, dict)
     
-    @pytest.mark.asyncio  
-    async def test_browser_snapshot_no_session(self):
-        """Should handle snapshot without active session."""
-        from lethe.tools import browser_snapshot
+    @pytest.mark.asyncio
+    async def test_browser_snapshot(self):
+        """Should get accessibility snapshot."""
+        _check_agent_browser()
+        from lethe.tools import browser_open, browser_snapshot
+        import json
         
-        try:
-            result = await browser_snapshot()
-            assert isinstance(result, (str, dict))
-        except Exception as e:
-            pytest.skip(f"Browser tool not available: {e}")
+        # First open a page
+        await browser_open("https://example.com")
+        
+        # Then get snapshot
+        result = await browser_snapshot()
+        
+        # Should return JSON or accessibility tree
+        assert isinstance(result, (str, dict))
+        if isinstance(result, str):
+            # Try to parse as JSON
+            try:
+                data = json.loads(result)
+                assert isinstance(data, dict)
+            except json.JSONDecodeError:
+                # Might be raw accessibility tree text
+                assert len(result) > 0
+    
+    @pytest.mark.asyncio
+    async def test_browser_click_invalid_ref(self):
+        """Should handle invalid ref gracefully."""
+        _check_agent_browser()
+        from lethe.tools import browser_click
+        import json
+        
+        result = await browser_click("@invalid_ref_12345")
+        
+        # Should return error, not crash
+        if isinstance(result, str):
+            try:
+                data = json.loads(result)
+                assert "error" in str(data).lower() or "not found" in str(data).lower()
+            except json.JSONDecodeError:
+                # Raw error message
+                assert len(result) > 0
+    
+    @pytest.mark.asyncio
+    async def test_browser_fill_invalid_ref(self):
+        """Should handle invalid ref gracefully."""
+        _check_agent_browser()
+        from lethe.tools import browser_fill
+        import json
+        
+        result = await browser_fill("@invalid_ref_12345", "test text")
+        
+        # Should return error, not crash
+        assert isinstance(result, (str, dict))
 
 
 # ============================================================================
