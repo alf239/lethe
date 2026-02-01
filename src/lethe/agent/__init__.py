@@ -343,6 +343,19 @@ I'll update this as I learn about my principal's current projects and priorities
         self._agent_id = agent.id
         logger.info(f"Created agent: {self._agent_id}")
 
+        # Add RequiresApprovalToolRule for all tools to enable client-side execution
+        # Without this, Letta executes tools server-side (hitting our stubs)
+        from letta_client.types import RequiresApprovalToolRuleParam
+        tool_rules = [
+            RequiresApprovalToolRuleParam(tool_name=t.name, type="requires_approval")
+            for t in agent.tools
+        ]
+        await self.client.agents.update(
+            agent_id=agent.id,
+            tool_rules=tool_rules,
+        )
+        logger.info(f"Added {len(tool_rules)} approval rules for client-side execution")
+
         return self._agent_id
 
     def _setup_tool_handlers(self):
@@ -1100,6 +1113,25 @@ I'll update this as I learn about my principal's current projects and priorities
                         logger.info(f"  Detached: {tool_name}")
                     except Exception as e:
                         logger.warning(f"  Failed to detach {tool_name}: {e}")
+
+        # Ensure tool_rules exist for all tools (enables client-side execution)
+        # Re-fetch agent to get updated tool list
+        agent = await self.client.agents.retrieve(agent_id)
+        existing_rules = {r.tool_name for r in (agent.tool_rules or [])}
+        all_tool_names = {t.name for t in agent.tools}
+        missing_rules = all_tool_names - existing_rules
+
+        if missing_rules:
+            from letta_client.types import RequiresApprovalToolRuleParam
+            tool_rules = [
+                RequiresApprovalToolRuleParam(tool_name=name, type="requires_approval")
+                for name in all_tool_names  # Include all tools, not just missing
+            ]
+            await self.client.agents.update(
+                agent_id=agent_id,
+                tool_rules=tool_rules,
+            )
+            logger.info(f"Updated tool_rules: added {len(missing_rules)} missing approval rules")
 
     async def _recover_from_pending_approval(self, agent_id: str, original_messages: list, error_str: str = ""):
         """Recover from a stuck pending approval state by denying it and retrying."""
