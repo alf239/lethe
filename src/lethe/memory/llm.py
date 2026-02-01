@@ -23,6 +23,11 @@ CHARS_PER_TOKEN = 4
 DEFAULT_CONTEXT_LIMIT = 128000  # tokens
 DEFAULT_MAX_OUTPUT = 8000  # tokens
 
+# Context budget management (Letta-style)
+TOKEN_SAFETY_MARGIN = 1.3  # Safety margin for approximate token counting
+SLIDING_WINDOW_KEEP_RATIO = 0.7  # Keep 70% of context after compaction
+COMPACTION_TRIGGER_RATIO = 0.85  # Trigger compaction at 85% capacity
+
 # Letta-style summarization prompt
 SUMMARIZE_PROMPT = """Your job is to summarize a history of previous messages in a conversation between an AI persona and a human.
 The conversation you are given is from a fixed context window and may not be complete.
@@ -80,8 +85,13 @@ class ContextWindow:
     _summarizer: Optional[Callable] = None  # Set by LLMClient
     
     def count_tokens(self, text: str) -> int:
-        """Approximate token count (4 chars per token)."""
-        return len(text) // CHARS_PER_TOKEN
+        """Approximate token count with safety margin.
+        
+        Uses 4 chars per token approximation with 1.3x safety margin
+        to avoid underestimating (Letta's approach).
+        """
+        base_count = len(text) // CHARS_PER_TOKEN
+        return int(base_count * TOKEN_SAFETY_MARGIN)
     
     def get_fixed_tokens(self) -> int:
         """Get tokens used by fixed content."""
@@ -118,30 +128,83 @@ class ContextWindow:
         self._compress_if_needed()
     
     def _compress_if_needed(self):
-        """Summarize oldest messages if context is too full."""
+        """Summarize oldest messages using Letta-style sliding window.
+        
+        Approach:
+        1. Trigger when messages exceed COMPACTION_TRIGGER_RATIO (85%) of available
+        2. Find cutoff point to keep SLIDING_WINDOW_KEEP_RATIO (70%) of messages
+        3. Cutoff must be at assistant message boundary (avoid mid-conversation splits)
+        4. Summarize messages before cutoff, keep messages after
+        """
         available = self.get_available_tokens()
         total = sum(self.count_tokens(m.content) for m in self.messages)
         
-        # If we're over 80% capacity, summarize older messages
-        if total > available * 0.8 and len(self.messages) > 4:
-            # Take oldest half of messages to summarize
-            split_point = len(self.messages) // 2
-            to_summarize = self.messages[:split_point]
-            self.messages = self.messages[split_point:]
-            
-            if self._summarizer and to_summarize:
-                logger.info(f"Summarizing {len(to_summarize)} old messages...")
-                new_summary = self._summarizer(to_summarize, self.summary)
-                if new_summary:
-                    self.summary = new_summary
-                    logger.info(f"Summary updated: {len(self.summary)} chars")
+        # Check if compaction needed
+        if total <= available * COMPACTION_TRIGGER_RATIO or len(self.messages) <= 4:
+            return
+        
+        logger.info(f"Context compaction triggered: {total} tokens > {available * COMPACTION_TRIGGER_RATIO:.0f} threshold")
+        
+        # Calculate target: keep SLIDING_WINDOW_KEEP_RATIO of messages
+        target_keep = int(len(self.messages) * SLIDING_WINDOW_KEEP_RATIO)
+        target_keep = max(target_keep, 2)  # Keep at least 2 messages
+        
+        # Find cutoff point - must end on assistant message for clean break
+        cutoff = len(self.messages) - target_keep
+        
+        # Adjust cutoff to end on assistant message boundary
+        while cutoff > 0 and cutoff < len(self.messages):
+            if self.messages[cutoff - 1].role == "assistant":
+                break
+            cutoff -= 1
+        
+        if cutoff <= 0:
+            # Can't find good cutoff, use simple split
+            cutoff = len(self.messages) - target_keep
+        
+        to_summarize = self.messages[:cutoff]
+        self.messages = self.messages[cutoff:]
+        
+        logger.info(f"Compacting: summarizing {len(to_summarize)} messages, keeping {len(self.messages)}")
+        
+        if self._summarizer and to_summarize:
+            new_summary = self._summarizer(to_summarize, self.summary)
+            if new_summary:
+                # Clip summary to reasonable length (Letta uses 50k chars default)
+                if len(new_summary) > 50000:
+                    new_summary = new_summary[:50000] + "\n[Summary truncated...]"
+                self.summary = new_summary
+                logger.info(f"Summary updated: {len(self.summary)} chars")
+        else:
+            # Fallback: text-based summary
+            old_text = "\n".join(f"{m.role}: {m.content[:300]}" for m in to_summarize[-10:])
+            if self.summary:
+                self.summary = f"{self.summary}\n\n[Additional context from {len(to_summarize)} messages]\n{old_text}"
             else:
-                # Fallback: just prepend to existing summary as text
-                old_text = "\n".join(f"{m.role}: {m.content[:200]}" for m in to_summarize)
-                if self.summary:
-                    self.summary = f"{self.summary}\n\nMore context:\n{old_text[:500]}"
-                else:
-                    self.summary = f"Previous context:\n{old_text[:500]}"
+                self.summary = f"[Summary of {len(to_summarize)} previous messages]\n{old_text}"
+            # Clip fallback summary too
+            if len(self.summary) > 50000:
+                self.summary = self.summary[:50000] + "\n[Summary truncated...]"
+    
+    def get_stats(self) -> dict:
+        """Get context window statistics."""
+        message_tokens = sum(self.count_tokens(m.content) for m in self.messages)
+        fixed_tokens = self.get_fixed_tokens()
+        available = self.get_available_tokens()
+        total_used = fixed_tokens + message_tokens
+        
+        return {
+            "context_limit": self.config.context_limit,
+            "fixed_tokens": fixed_tokens,
+            "message_tokens": message_tokens,
+            "total_used": total_used,
+            "available": available,
+            "utilization": f"{(total_used / self.config.context_limit * 100):.1f}%",
+            "message_count": len(self.messages),
+            "summary_chars": len(self.summary),
+            "compaction_threshold": f"{COMPACTION_TRIGGER_RATIO * 100:.0f}%",
+            "keep_ratio": f"{SLIDING_WINDOW_KEEP_RATIO * 100:.0f}%",
+        }
     
     def build_messages(self) -> List[Dict]:
         """Build messages array for API call."""
@@ -485,6 +548,10 @@ class AsyncLLMClient:
     def register_tool(self, name: str, handler: Callable, schema: Dict):
         """Register a tool (legacy method, use add_tool instead)."""
         self._tools[name] = (handler, schema)
+    
+    def get_context_stats(self) -> dict:
+        """Get context window statistics."""
+        return self.context.get_stats()
     
     def update_memory_context(self, memory_context: str):
         """Update the memory context."""
