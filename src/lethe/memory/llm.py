@@ -588,12 +588,13 @@ class AsyncLLMClient:
             # Get content (might be present even with tool calls)
             content = assistant_msg.get("content") or ""
             
-            # Callback with intermediate message
-            if content and on_message:
-                await on_message(content)
-            
             # Handle tool calls
             tool_calls = assistant_msg.get("tool_calls")
+            
+            # Callback with intermediate message (only when there are tool calls - i.e. more work to do)
+            # Don't callback with final response - that's returned and handled by caller
+            if content and on_message and tool_calls:
+                await on_message(content)
             if tool_calls:
                 # Add assistant message with tool calls
                 self.context.add_message(Message(
