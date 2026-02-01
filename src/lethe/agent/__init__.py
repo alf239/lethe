@@ -110,7 +110,7 @@ class AgentManager:
             logger.warning(f"Failed to get recent messages: {e}")
             return []
 
-    async def clear_pending_approvals(self, agent_id: str, max_iterations: int = 5) -> bool:
+    async def clear_pending_approvals(self, agent_id: str, max_iterations: int = 20) -> bool:
         """Clear any pending approval requests from previous sessions.
         
         Should be called on startup to avoid 409 PENDING_APPROVAL errors.
@@ -229,6 +229,9 @@ class AgentManager:
             except Exception as e:
                 logger.warning(f"Error clearing pending approvals (iteration {iteration + 1}): {e}")
                 break
+        else:
+            # Loop completed without break - may still have pending approvals
+            logger.warning(f"Max iterations ({max_iterations}) reached clearing approvals - may still have pending")
         
         return cleared_any
 
@@ -1161,7 +1164,16 @@ I'll update this as I learn about my principal's current projects and priorities
             logger.info(f"Found pending request: {pending_request_id}, trying to clear via clear_pending_approvals")
         
         # Use clear_pending_approvals which handles the proper format
-        await self.clear_pending_approvals(agent_id)
+        cleared = await self.clear_pending_approvals(agent_id)
+        
+        if not cleared:
+            # Could not clear - check if agent still has pending approvals
+            agent = await self.client.agents.retrieve(agent_id)
+            message_ids = getattr(agent, "message_ids", None) or []
+            if message_ids:
+                last_msg = await self.client.messages.retrieve(message_ids[-1])
+                if getattr(last_msg, "message_type", None) == "approval_request_message":
+                    raise RuntimeError("Failed to clear pending approval - agent still waiting for approval")
         
         # Retry the original message
         return await self.client.agents.messages.create(

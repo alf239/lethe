@@ -20,8 +20,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Profile directory for persistent sessions
-PROFILE_DIR = os.path.expanduser("~/.local/share/lethe/browser-profile")
+# Profile directory for persistent sessions (in workspace for easy access)
+WORKSPACE = os.environ.get("WORKSPACE", os.path.expanduser("~/devel/lethe/workspace"))
+PROFILE_DIR = os.path.join(WORKSPACE, "browser")
 
 
 def _get_agent_browser_path() -> str:
