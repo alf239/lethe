@@ -148,6 +148,16 @@ class TelegramBot:
                 await self.bot.send_message(chat_id, chunk, parse_mode=None)
             await asyncio.sleep(0.1)
 
+    async def send_photo(self, chat_id: int, photo_path: str, caption: str = ""):
+        """Send a photo to chat."""
+        from aiogram.types import FSInputFile
+        try:
+            photo = FSInputFile(photo_path)
+            await self.bot.send_photo(chat_id, photo, caption=caption[:1024] if caption else None)
+        except Exception as e:
+            logger.error(f"Failed to send photo: {e}")
+            await self.send_message(chat_id, f"[Image: {photo_path}]")
+
     async def start_typing(self, chat_id: int):
         """Start showing typing indicator."""
         if chat_id in self._typing_tasks:

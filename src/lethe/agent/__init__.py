@@ -192,12 +192,14 @@ class Agent:
         self,
         message: str,
         on_message: Optional[Callable[[str], Any]] = None,
+        on_image: Optional[Callable[[str], Any]] = None,
     ) -> str:
         """Send a message and get a response.
         
         Args:
             message: User message
             on_message: Optional callback for intermediate messages
+            on_image: Optional callback for image attachments (screenshots)
             
         Returns:
             Final assistant response
@@ -206,7 +208,7 @@ class Agent:
         self.memory.messages.add("user", message)
         
         # Get response from LLM (handles tool calls internally)
-        response = await self.llm.chat(message, on_message=on_message)
+        response = await self.llm.chat(message, on_message=on_message, on_image=on_image)
         
         # Store assistant response in history
         self.memory.messages.add("assistant", response)

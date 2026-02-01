@@ -83,8 +83,15 @@ async def run():
                 # Send thinking/reasoning as-is (no emoji prefix)
                 await telegram_bot.send_message(chat_id, content)
             
+            # Callback for image attachments (screenshots, etc.)
+            async def on_image(image_path: str):
+                """Send image to user."""
+                if interrupt_check():
+                    return
+                await telegram_bot.send_photo(chat_id, image_path)
+            
             # Get response from agent
-            response = await agent.chat(message, on_message=on_intermediate)
+            response = await agent.chat(message, on_message=on_intermediate, on_image=on_image)
             
             # Check for interrupt
             if interrupt_check():

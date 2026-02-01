@@ -557,6 +557,7 @@ class AsyncLLMClient:
         message: str,
         max_tool_iterations: int = 10,
         on_message: Optional[Callable] = None,
+        on_image: Optional[Callable] = None,  # Callback for image attachments
         _continuation_depth: int = 0,  # Internal: track auto-continue depth
     ) -> str:
         """Send a message and get response, handling tool calls.
@@ -625,6 +626,15 @@ class AsyncLLMClient:
                     
                     logger.info(f"  Result: {str(result)[:100]}...")
                     
+                    # Check for image attachment in result
+                    if isinstance(result, dict) and "_image_attachment" in result:
+                        img = result["_image_attachment"]
+                        if on_image and img.get("path"):
+                            await on_image(img["path"])
+                        # Remove attachment from result for context
+                        result_for_context = {k: v for k, v in result.items() if k != "_image_attachment"}
+                        result = result_for_context
+                    
                     # Add tool result
                     self.context.add_message(Message(
                         role="tool",
@@ -647,6 +657,7 @@ class AsyncLLMClient:
                 message="[Continue with your task]",
                 max_tool_iterations=max_tool_iterations,
                 on_message=on_message,
+                on_image=on_image,
                 _continuation_depth=_continuation_depth + 1,
             )
         
