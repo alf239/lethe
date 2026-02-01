@@ -13,6 +13,8 @@ dependencies = [
     "rich>=13.9.0",
     "pyte>=0.8.0", # Terminal emulator for TUI capture
     "pillow>=12.1.0",
+    "lancedb>=0.27.1",
+    "sentence-transformers>=5.2.2",
 ]
 # Note: Browser automation requires agent-browser CLI: npm install -g agent-browser
 
