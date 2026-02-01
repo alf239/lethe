@@ -1161,37 +1161,50 @@ I'll update this as I learn about my principal's current projects and priorities
             if missing_rules:
                 logger.info(f"Added approval rules for client-side tools: {missing_rules}")
 
-    async def _recover_from_pending_approval(self, agent_id: str, original_messages: list, error_str: str = ""):
-        """Recover from a stuck pending approval state by denying it and retrying."""
+    async def _recover_from_pending_approval(self, agent_id: str, original_messages: list, error_str: str = "", max_retries: int = 3):
+        """Recover from a stuck pending approval state by denying it and retrying.
+        
+        May retry multiple times if the agent keeps creating new tool calls.
+        """
         import re
         
-        # Try to extract pending_request_id from error message
-        pending_request_id = None
-        if error_str:
-            match = re.search(r"'pending_request_id':\s*'(message-[a-f0-9-]+)'", error_str)
-            if match:
-                pending_request_id = match.group(1)
+        for attempt in range(max_retries):
+            # Try to extract pending_request_id from error message
+            pending_request_id = None
+            if error_str:
+                match = re.search(r"'pending_request_id':\s*'(message-[a-f0-9-]+)'", error_str)
+                if match:
+                    pending_request_id = match.group(1)
+            
+            if pending_request_id:
+                logger.info(f"Found pending request: {pending_request_id}, trying to clear via clear_pending_approvals (attempt {attempt + 1})")
+            
+            # Use clear_pending_approvals which handles the proper format
+            cleared = await self.clear_pending_approvals(agent_id)
+            
+            if not cleared:
+                # Could not clear - check if agent still has pending approvals
+                agent = await self.client.agents.retrieve(agent_id)
+                message_ids = getattr(agent, "message_ids", None) or []
+                if message_ids:
+                    last_msg = await self.client.messages.retrieve(message_ids[-1])
+                    if getattr(last_msg, "message_type", None) == "approval_request_message":
+                        raise RuntimeError("Failed to clear pending approval - agent still waiting for approval")
+            
+            # Retry the original message
+            try:
+                return await self.client.agents.messages.create(
+                    agent_id=agent_id,
+                    messages=original_messages,
+                )
+            except Exception as e:
+                error_str = str(e)
+                if "PENDING_APPROVAL" in error_str and attempt < max_retries - 1:
+                    logger.warning(f"Retry {attempt + 1} also hit PENDING_APPROVAL, trying again...")
+                    continue
+                raise
         
-        if pending_request_id:
-            logger.info(f"Found pending request: {pending_request_id}, trying to clear via clear_pending_approvals")
-        
-        # Use clear_pending_approvals which handles the proper format
-        cleared = await self.clear_pending_approvals(agent_id)
-        
-        if not cleared:
-            # Could not clear - check if agent still has pending approvals
-            agent = await self.client.agents.retrieve(agent_id)
-            message_ids = getattr(agent, "message_ids", None) or []
-            if message_ids:
-                last_msg = await self.client.messages.retrieve(message_ids[-1])
-                if getattr(last_msg, "message_type", None) == "approval_request_message":
-                    raise RuntimeError("Failed to clear pending approval - agent still waiting for approval")
-        
-        # Retry the original message
-        return await self.client.agents.messages.create(
-            agent_id=agent_id,
-            messages=original_messages,
-        )
+        raise RuntimeError(f"Failed to recover after {max_retries} attempts - agent keeps creating pending approvals")
 
     async def _execute_tool_locally(self, tool_name: str, arguments: dict) -> tuple[str, str, Optional[dict]]:
         """Execute a tool locally and return (result, status, image_attachment).
