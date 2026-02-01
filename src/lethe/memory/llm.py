@@ -554,6 +554,27 @@ class AsyncLLMClient:
         response.raise_for_status()
         return response.json()
     
+    def get_context_stats(self) -> Dict:
+        """Get context window statistics."""
+        system_tokens = self.context.count_tokens(self.context.system_prompt)
+        memory_tokens = self.context.count_tokens(self.context.memory_context)
+        summary_tokens = self.context.count_tokens(self.context.summary)
+        message_tokens = sum(
+            self.context.count_tokens(m.content) 
+            for m in self.context.messages
+        )
+        
+        return {
+            "system_tokens": system_tokens,
+            "memory_tokens": memory_tokens,
+            "summary_tokens": summary_tokens,
+            "message_tokens": message_tokens,
+            "total_tokens": system_tokens + memory_tokens + summary_tokens + message_tokens,
+            "context_limit": self.config.context_limit,
+            "available_tokens": self.context.get_available_tokens(),
+            "message_count": len(self.context.messages),
+        }
+    
     async def close(self):
         """Close the HTTP client."""
         if self._client:

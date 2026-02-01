@@ -5,17 +5,14 @@ import logging
 import signal
 import sys
 
-
 from rich.console import Console
 from rich.logging import RichHandler
 
-from lethe.agent import AgentManager
+from lethe.agent import Agent
 from lethe.config import get_settings
 from lethe.conversation import ConversationManager
-from lethe.tasks import TaskManager
-from lethe.tasks.worker import TaskWorker
 from lethe.telegram import TelegramBot
-from lethe.worker import HeartbeatWorker, Worker
+from lethe.tools import register_tools
 
 console = Console()
 
@@ -35,6 +32,7 @@ def setup_logging(verbose: bool = False):
     logging.getLogger("aiogram").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
 
 async def run():
@@ -46,102 +44,66 @@ async def run():
     except Exception as e:
         console.print(f"[red]Configuration error:[/red] {e}")
         console.print("\nMake sure you have a .env file with TELEGRAM_BOT_TOKEN set.")
+        console.print("Also ensure OPENROUTER_API_KEY is set in your environment.")
         sys.exit(1)
 
-    console.print("[bold blue]Lethe[/bold blue] - Autonomous Executive Assistant")
-    console.print(f"Letta server: {settings.letta_base_url}")
-    console.print(f"Agent name: {settings.lethe_agent_name}")
+    console.print("[bold blue]Lethe[/bold blue] - Autonomous AI Assistant")
+    console.print(f"Model: {settings.llm_model}")
+    console.print(f"Memory: {settings.memory_dir}")
     console.print()
 
-    # Initialize conversation manager (replaces task queue for foreground)
+    # Initialize agent
+    console.print("[dim]Initializing agent...[/dim]")
+    agent = Agent(settings)
+    agent.initialize_default_blocks()
+    
+    # Register external tools
+    register_tools(agent)
+    
+    stats = agent.get_stats()
+    console.print(f"[green]Agent ready[/green] - {stats['memory_blocks']} blocks, {stats['archival_memories']} memories")
+
+    # Initialize conversation manager
     conversation_manager = ConversationManager(debounce_seconds=settings.debounce_seconds)
     logger.info(f"Conversation manager initialized (debounce: {settings.debounce_seconds}s)")
-    
-    # Initialize background task manager
-    task_db_path = settings.db_path.parent / "tasks.db"
-    bg_task_manager = TaskManager(task_db_path)
-    await bg_task_manager.initialize()
-    logger.info("Background task manager initialized")
 
-    agent_manager = AgentManager(settings)
-    
-    # Initialize agent to get ID (needed for callbacks)
-    agent_id = await agent_manager.get_or_create_agent()
-    
-    # Create worker first (needed for process_callback)
-    worker = Worker(conversation_manager, agent_manager, None, bg_task_manager, settings)  # telegram_bot set later
-    
-    # Callback when user stops tasks via /stop command
-    async def on_task_stopped(task_ids: list[str], chat_id: int):
-        """Notify agent that tasks were stopped by user."""
-        tasks_info = []
-        for tid in task_ids:
-            task = await bg_task_manager.get_task(tid)
-            if task:
-                tasks_info.append(f"- {task.description[:50]}...")
+    # Message processing callback
+    async def process_message(chat_id: int, user_id: int, message: str, metadata: dict, interrupt_check):
+        """Process a message from Telegram."""
+        logger.info(f"Processing message from {user_id}: {message[:50]}...")
         
-        if tasks_info:
-            # Send a message to the agent informing about cancelled tasks
-            msg = f"[SYSTEM] User cancelled {len(task_ids)} background task(s):\n" + "\n".join(tasks_info)
-            try:
-                await agent_manager.send_message(
-                    message=msg,
-                    on_message=lambda content: None,  # Agent response goes to user via normal channel
-                )
-            except Exception as e:
-                logger.warning(f"Failed to notify agent about stopped tasks: {e}")
-    
-    telegram_bot = TelegramBot(
-        settings, 
-        conversation_manager=conversation_manager,
-        process_callback=worker.process_message,
-        bg_task_manager=bg_task_manager,
-        on_task_stopped=on_task_stopped,
-        agent_manager=agent_manager,
-    )
-    
-    # Wire up telegram_bot reference to worker
-    worker.telegram_bot = telegram_bot
+        # Start typing indicator
+        await telegram_bot.start_typing(chat_id)
+        
+        try:
+            # Callback for intermediate messages (optional)
+            async def on_intermediate(content: str):
+                if content and len(content) > 10:
+                    # Could send intermediate updates here
+                    pass
+            
+            # Get response from agent
+            response = await agent.chat(message, on_message=on_intermediate)
+            
+            # Check for interrupt
+            if interrupt_check():
+                logger.info("Processing interrupted")
+                return
+            
+            # Send response
+            await telegram_bot.send_message(chat_id, response)
+            
+        except Exception as e:
+            logger.exception(f"Error processing message: {e}")
+            await telegram_bot.send_message(chat_id, f"Error: {e}")
+        finally:
+            await telegram_bot.stop_typing(chat_id)
 
-    # Create heartbeat worker if we have a primary user
-    heartbeat = None
-    primary_user_id = None
-    if settings.allowed_user_ids:
-        primary_user_id = settings.allowed_user_ids[0]
-        heartbeat = HeartbeatWorker(
-            agent_manager=agent_manager,
-            telegram_bot=telegram_bot,
-            chat_id=primary_user_id,
-            interval_minutes=15,
-            identity_refresh_hours=2,
-            enabled=True,
-        )
-        logger.info(f"Heartbeat enabled for user {primary_user_id} (every 15 min, identity refresh every 2h)")
-    else:
-        logger.info("Heartbeat disabled (no allowed_user_ids configured)")
-    
-    # Callback to notify user when a background task completes
-    async def on_task_complete(task):
-        if primary_user_id:
-            try:
-                status_emoji = "✅" if task.status.value == "completed" else "❌"
-                msg = f"{status_emoji} Background task completed: {task.description[:50]}..."
-                if task.result:
-                    # Send full result - Telegram bot handles message splitting
-                    msg += f"\n\nResult:\n{task.result}"
-                if task.error:
-                    msg += f"\n\nError: {task.error}"
-                await telegram_bot.send_message(primary_user_id, msg)
-                logger.info(f"Sent task completion notification for {task.id}")
-            except Exception as e:
-                logger.error(f"Failed to send task completion notification: {e}")
-    
-    bg_task_worker = TaskWorker(
-        task_manager=bg_task_manager,
-        letta_client=agent_manager.client,
-        main_agent_id=agent_id,
-        tool_handlers=agent_manager._tool_handlers,
-        on_task_complete=on_task_complete,
+    # Initialize Telegram bot
+    telegram_bot = TelegramBot(
+        settings,
+        conversation_manager=conversation_manager,
+        process_callback=process_message,
     )
 
     # Set up shutdown handling
@@ -155,49 +117,27 @@ async def run():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
 
-    # Start all components
+    # Start services
     console.print("[green]Starting services...[/green]")
 
-    # Create tasks
-    worker_task = asyncio.create_task(worker.start())
     bot_task = asyncio.create_task(telegram_bot.start())
-    heartbeat_task = asyncio.create_task(heartbeat.start()) if heartbeat else None
-    bg_task_worker_task = asyncio.create_task(bg_task_worker.start())
 
     try:
-        # Wait for shutdown signal
         await shutdown_event.wait()
     except asyncio.CancelledError:
         pass
     finally:
-        # Cleanup
         console.print("\n[yellow]Shutting down...[/yellow]")
         
-        # Stop components
-        await worker.stop()
         await telegram_bot.stop()
-        if heartbeat:
-            await heartbeat.stop()
-        await bg_task_worker.stop()
+        await agent.close()
         
-        # Cancel tasks
-        worker_task.cancel()
         bot_task.cancel()
-        if heartbeat_task:
-            heartbeat_task.cancel()
-        bg_task_worker_task.cancel()
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            pass
         
-        # Wait for tasks to finish
-        tasks_to_wait = [worker_task, bot_task, bg_task_worker_task]
-        if heartbeat_task:
-            tasks_to_wait.append(heartbeat_task)
-        for task in tasks_to_wait:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        
-        await bg_task_manager.close()
         console.print("[green]Shutdown complete.[/green]")
 
 
@@ -205,12 +145,12 @@ def main():
     """CLI entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Lethe - Autonomous Executive Assistant")
+    parser = argparse.ArgumentParser(description="Lethe - Autonomous AI Assistant")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
     setup_logging(verbose=args.verbose)
-    
+
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
