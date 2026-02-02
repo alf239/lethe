@@ -40,13 +40,18 @@ from lethe.tools.web_search import (
     is_available as web_search_available,
 )
 
+# Internal telegram context (not tools - used by main.py)
+from lethe.tools.telegram_tools import (
+    set_telegram_context,
+    set_last_message_id,
+    clear_telegram_context,
+)
+
+# Agent tools
 from lethe.tools.telegram_tools import (
     telegram_react_async as telegram_react,
     telegram_send_message_async as telegram_send_message,
     telegram_send_file_async as telegram_send_file,
-    set_telegram_context,
-    set_last_message_id,
-    clear_telegram_context,
 )
 
 
@@ -245,10 +250,11 @@ __all__ = [
     "web_search",
     "fetch_webpage",
     "web_search_available",
-    # Telegram
+    # Telegram (tools)
     "telegram_react",
     "telegram_send_message", 
     "telegram_send_file",
+    # Telegram (internal - for main.py)
     "set_telegram_context",
     "set_last_message_id",
     "clear_telegram_context",
