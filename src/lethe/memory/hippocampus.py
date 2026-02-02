@@ -1,11 +1,15 @@
-"""Hippocampus - Autoassociative memory retrieval.
+"""Hippocampus - Pattern completion memory retrieval.
 
-Inspired by the biological hippocampus that consolidates and retrieves memories.
-On each user message, searches archival and conversation history for relevant context.
-Summarizes retrieved memories to compress context while preserving reference data.
+Inspired by biological hippocampus CA3 region which performs autoassociative
+pattern completion: given a partial cue, retrieve the complete memory.
+
+Uses LLM to decide if recall would help and generate concise search queries.
+This produces better results than raw message similarity search.
 """
 
+import json
 import logging
+import re
 from typing import Optional, Callable, Awaitable
 from datetime import datetime, timezone
 
@@ -16,6 +20,46 @@ MAX_RECALL_LINES = 500
 
 # Minimum score threshold for including memories
 MIN_SCORE_THRESHOLD = 0.3
+
+# Decision prompt - should we recall?
+ANALYZE_PROMPT = """You are a memory retrieval assistant. Decide if looking up memories would benefit the current conversation.
+
+RECENT CONTEXT:
+{context}
+
+NEW USER MESSAGE:
+{message}
+
+Would looking up memories (past conversations, archival notes, credentials, previous decisions) benefit the response?
+
+Think about:
+- Does this reference something from before?
+- Would past context improve the answer?
+- Are there credentials/configs/patterns we discussed?
+- Is this a continuation of previous work?
+
+Look for:
+- References to people, places, projects, or things mentioned before
+- Questions that might have been answered previously
+- Credentials, API keys, configurations discussed before
+- Patterns, preferences, or decisions made in the past
+
+Do NOT recall for:
+- Simple greetings ("Hello!", "Hi")
+- Self-contained questions ("What's 2+2?")
+- New topics with no prior context
+- Explicit "forget" or "start fresh" requests
+
+Respond ONLY with valid JSON:
+{{"should_recall": true/false, "search_query": "2-5 word query or null", "reason": "brief reason"}}
+
+Examples:
+- "Deploy the app" -> {{"should_recall": true, "search_query": "server deployment config", "reason": "may need server details"}}
+- "What did we decide about the API?" -> {{"should_recall": true, "search_query": "API design decisions", "reason": "explicit reference to past"}}
+- "Hello!" -> {{"should_recall": false, "search_query": null, "reason": "simple greeting"}}
+- "Fix the bug in auth.py" -> {{"should_recall": true, "search_query": "auth.py issues", "reason": "may have context"}}
+
+JSON only:"""
 
 # Summarization prompt - preserves reference data
 SUMMARIZE_PROMPT = """Summarize these recalled memories concisely for context. 
@@ -42,28 +86,32 @@ ACAUSAL_WARNING = """WARNING: This recall is acausal - these memories may be fro
 
 
 class Hippocampus:
-    """Retrieves and summarizes relevant memories to augment user messages.
+    """Pattern completion memory retrieval with LLM-guided search.
     
-    Uses the conversation context + new message as a search query,
-    returning relevant archival memories and past conversations.
-    Optionally summarizes to compress context.
+    Uses LLM to:
+    1. Decide if memory recall would benefit the conversation
+    2. Generate concise search queries (2-5 words) for better similarity matching
+    3. Summarize retrieved memories to compress context
     """
     
     def __init__(
         self, 
         memory_store, 
         summarizer: Optional[Callable[[str], Awaitable[str]]] = None,
+        analyzer: Optional[Callable[[str], Awaitable[str]]] = None,
         enabled: bool = True,
     ):
         """Initialize hippocampus.
         
         Args:
             memory_store: MemoryStore instance with archival and messages
-            summarizer: Optional async function to summarize memories
+            summarizer: Async function to summarize memories (uses aux model)
+            analyzer: Async function to analyze if recall needed (uses aux model)
             enabled: Whether to enable memory recall
         """
         self.memory = memory_store
         self.summarizer = summarizer
+        self.analyzer = analyzer or summarizer  # Use same function if not specified
         self.enabled = enabled
         logger.info(f"Hippocampus initialized (enabled={enabled}, summarizer={summarizer is not None})")
     
@@ -74,6 +122,8 @@ class Hippocampus:
         max_lines: int = MAX_RECALL_LINES,
     ) -> Optional[str]:
         """Recall relevant memories for a user message.
+        
+        Uses LLM to decide if recall is needed and generate optimized search query.
         
         Args:
             message: The new user message
@@ -86,22 +136,33 @@ class Hippocampus:
         if not self.enabled:
             return None
         
-        # Build search query from message + recent context
-        query = self._build_query(message, recent_messages)
+        # Step 1: Ask LLM if we should recall and get optimized query
+        analysis = await self._analyze_for_recall(message, recent_messages)
         
-        # Search archival memory
-        archival_results = self._search_archival(query)
+        if not analysis or not analysis.get("should_recall"):
+            reason = analysis.get("reason") if analysis else "analysis failed"
+            logger.info(f"Hippocampus: skipping recall - {reason}")
+            return None
         
-        # Search conversation history
-        conversation_results = self._search_conversations(query, exclude_recent=5)
+        search_query = analysis.get("search_query")
+        if not search_query:
+            logger.warning("Hippocampus: should_recall=True but no search_query")
+            return None
+        
+        logger.info(f"Hippocampus: searching with query '{search_query}' (reason: {analysis.get('reason')})")
+        
+        # Step 2: Search with LLM-generated query
+        archival_results = self._search_archival(search_query)
+        conversation_results = self._search_conversations(search_query, exclude_recent=5)
         
         # Combine and format results
         memories = self._format_memories(archival_results, conversation_results, max_lines)
         
         if not memories:
+            logger.info("Hippocampus: no memories found for query")
             return None
         
-        # Summarize if we have a summarizer, otherwise wrap in recall block
+        # Step 3: Summarize if we have a summarizer
         if self.summarizer:
             return await self._summarize(memories)
         else:
@@ -112,29 +173,74 @@ class Hippocampus:
                 + "\n</associative_memory_recall>"
             )
     
-    def _build_query(
+    async def _analyze_for_recall(
         self,
         message: str,
         recent_messages: Optional[list[dict]] = None,
-    ) -> str:
-        """Build search query from message and recent context.
+    ) -> Optional[dict]:
+        """Use LLM to decide if recall is needed and generate search query.
         
-        Uses the new message as primary query, with recent context for
-        semantic enrichment.
+        Returns:
+            Dict with keys: should_recall (bool), search_query (str|None), reason (str)
+            Returns None if analysis fails
         """
-        # Primary query is the user message
-        query_parts = [message]
+        if not self.analyzer:
+            # Fallback: always recall with raw query
+            return {"should_recall": True, "search_query": message[:100], "reason": "no analyzer"}
         
-        # Add recent user messages for context (last 3)
-        if recent_messages:
-            recent_user = [
-                m["content"][:200] 
-                for m in recent_messages[-5:]
-                if m.get("role") == "user"
-            ][-3:]
-            query_parts.extend(recent_user)
+        try:
+            # Build context string
+            context = self._format_context(recent_messages)
+            
+            # Ask LLM
+            prompt = ANALYZE_PROMPT.format(context=context, message=message)
+            response = await self.analyzer(prompt)
+            
+            if not response:
+                return None
+            
+            # Parse JSON response
+            try:
+                # Try direct parse
+                result = json.loads(response.strip())
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                json_match = re.search(r'\{[^{}]*\}', response)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    logger.warning(f"Hippocampus: invalid JSON response: {response[:200]}")
+                    return None
+            
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Hippocampus analysis failed: {e}")
+            return None
+    
+    def _format_context(
+        self,
+        recent_messages: Optional[list[dict]] = None,
+    ) -> str:
+        """Format recent messages as context for the analyzer."""
+        if not recent_messages:
+            return "(new conversation)"
         
-        return " ".join(query_parts)
+        context_lines = []
+        for msg in recent_messages[-5:]:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    part.get("text", "") for part in content 
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+            # Truncate long messages
+            if len(content) > 200:
+                content = content[:200] + "..."
+            context_lines.append(f"{role}: {content}")
+        
+        return "\n".join(context_lines) if context_lines else "(new conversation)"
     
     def _search_archival(self, query: str, limit: int = 5) -> list[dict]:
         """Search archival memory."""

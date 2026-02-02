@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Union
 import logging
 
 import litellm
@@ -172,10 +172,23 @@ class LLMConfig:
 class Message:
     """A conversation message."""
     role: str  # system, user, assistant, tool
-    content: str
+    content: Union[str, List[Dict]]  # str or multimodal content list
     name: Optional[str] = None  # for tool messages
     tool_call_id: Optional[str] = None  # for tool results
     tool_calls: Optional[List[Dict]] = None  # for assistant tool calls
+    
+    def get_text_content(self) -> str:
+        """Get text content for token counting and logging."""
+        if isinstance(self.content, str):
+            return self.content
+        # Multimodal: extract text parts
+        texts = []
+        for part in self.content:
+            if part.get("type") == "text":
+                texts.append(part.get("text", ""))
+            elif part.get("type") == "image_url":
+                texts.append("[Image]")
+        return " ".join(texts)
 
 
 @dataclass 
@@ -254,7 +267,7 @@ class ContextWindow:
         4. Summarize messages before cutoff, keep messages after
         """
         available = self.get_available_tokens()
-        total = sum(self.count_tokens(m.content) for m in self.messages)
+        total = sum(self.count_tokens(m.get_text_content()) for m in self.messages)
         
         # Check if compaction needed
         if total <= available * COMPACTION_TRIGGER_RATIO or len(self.messages) <= 4:
@@ -294,7 +307,7 @@ class ContextWindow:
                 logger.info(f"Summary updated: {len(self.summary)} chars")
         else:
             # Fallback: text-based summary
-            old_text = "\n".join(f"{m.role}: {m.content[:300]}" for m in to_summarize[-10:])
+            old_text = "\n".join(f"{m.role}: {m.get_text_content()[:300]}" for m in to_summarize[-10:])
             if self.summary:
                 self.summary = f"{self.summary}\n\n[Additional context from {len(to_summarize)} messages]\n{old_text}"
             else:
@@ -305,7 +318,7 @@ class ContextWindow:
     
     def get_stats(self) -> dict:
         """Get context window statistics."""
-        message_tokens = sum(self.count_tokens(m.content) for m in self.messages)
+        message_tokens = sum(self.count_tokens(m.get_text_content()) for m in self.messages)
         fixed_tokens = self.get_fixed_tokens()
         available = self.get_available_tokens()
         total_used = fixed_tokens + message_tokens
@@ -422,7 +435,7 @@ class AsyncLLMClient:
         # Format messages for summarization
         formatted = []
         for m in messages:
-            formatted.append(f"{m.role}: {m.content}")
+            formatted.append(f"{m.role}: {m.get_text_content()}")
         conversation = "\n".join(formatted)
         
         if existing_summary:

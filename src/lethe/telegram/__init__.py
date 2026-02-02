@@ -127,6 +127,61 @@ class TelegramBot:
                 process_callback=self.process_callback,
             )
 
+        @self.dp.message(F.photo)
+        async def handle_photo(message: Message):
+            """Handle photo messages with optional caption."""
+            if not self._is_authorized(message.from_user.id):
+                await message.answer("Unauthorized.")
+                return
+
+            if not self.conversation_manager or not self.process_callback:
+                await message.answer("Bot not fully initialized.")
+                return
+
+            # Get the largest photo (last in the list)
+            photo = message.photo[-1]
+            
+            # Download photo to memory and convert to base64
+            import base64
+            from io import BytesIO
+            
+            try:
+                file = await self.bot.get_file(photo.file_id)
+                bio = BytesIO()
+                await self.bot.download_file(file.file_path, bio)
+                bio.seek(0)
+                image_data = base64.b64encode(bio.read()).decode('utf-8')
+                
+                # Determine mime type from file extension
+                ext = file.file_path.split('.')[-1].lower() if file.file_path else 'jpg'
+                mime_type = f"image/{ext}" if ext in ('jpg', 'jpeg', 'png', 'gif', 'webp') else "image/jpeg"
+                
+                # Build multimodal content
+                caption = message.caption or "What is this?"
+                multimodal_content = [
+                    {"type": "text", "text": caption},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_data}"}}
+                ]
+                
+                logger.info(f"Received photo ({photo.width}x{photo.height}) with caption: {caption[:50]}...")
+                
+                # Add message to conversation manager with multimodal content
+                await self.conversation_manager.add_message(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    content=multimodal_content,  # Pass as list for multimodal
+                    metadata={
+                        "username": message.from_user.username,
+                        "first_name": message.from_user.first_name,
+                        "is_photo": True,
+                        "photo_size": f"{photo.width}x{photo.height}",
+                    },
+                    process_callback=self.process_callback,
+                )
+            except Exception as e:
+                logger.error(f"Failed to process photo: {e}")
+                await message.answer(f"Failed to process photo: {e}")
+
     def _is_authorized(self, user_id: int) -> bool:
         """Check if user is authorized."""
         allowed = self.settings.allowed_user_ids

@@ -57,11 +57,12 @@ class Agent:
             memory_context=memory_context,
         )
         
-        # Initialize hippocampus with summarizer
+        # Initialize hippocampus with LLM functions (analyzer + summarizer use aux model)
         hippocampus_enabled = os.environ.get("HIPPOCAMPUS_ENABLED", "true").lower() == "true"
         self.hippocampus = Hippocampus(
             self.memory, 
             summarizer=self._summarize_memories,
+            analyzer=self._summarize_memories,  # Same aux model for analysis
             enabled=hippocampus_enabled,
         )
         
