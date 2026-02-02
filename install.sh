@@ -193,7 +193,7 @@ prompt_api_key() {
     local key_name="${PROVIDER_KEYS[$SELECTED_PROVIDER]}"
     local key_url="${PROVIDER_URLS[$SELECTED_PROVIDER]}"
     
-    # Check if already have key
+    # Check if already have key in environment
     local existing_key=""
     case $SELECTED_PROVIDER in
         openrouter) existing_key="${OPENROUTER_API_KEY:-}" ;;
@@ -202,10 +202,21 @@ prompt_api_key() {
     esac
     
     if [ -n "$existing_key" ]; then
+        local masked_key="${existing_key:0:12}...${existing_key: -4}"
         echo ""
-        echo -e "${GREEN}Found existing $key_name${NC}"
-        API_KEY="$existing_key"
-        return
+        echo -e "${GREEN}Found existing $key_name in environment${NC}"
+        echo "   $masked_key"
+        echo ""
+        echo "  1) Use existing key"
+        echo "  2) Enter a new key"
+        echo ""
+        read -p "Choose [1-2, default=1]: " choice < /dev/tty
+        choice=${choice:-1}
+        
+        if [[ "$choice" == "1" ]]; then
+            API_KEY="$existing_key"
+            return
+        fi
     fi
     
     echo ""
