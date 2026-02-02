@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     nodejs \
     npm \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Install agent-browser for browser automation
@@ -34,9 +35,10 @@ COPY config/ ./config/
 ENV UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
 RUN uv sync --frozen --index-strategy unsafe-best-match
 
-# Create non-root user for safety
-RUN useradd -m -s /bin/bash lethe
-RUN chown -R lethe:lethe /app /workspace
+# Create non-root user with sudo access
+RUN useradd -m -s /bin/bash lethe && \
+    echo "lethe ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    chown -R lethe:lethe /app /workspace
 
 USER lethe
 
