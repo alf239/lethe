@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Install agent-browser for browser automation
-RUN npm install -g agent-browser
+# Install agent-browser for browser automation (with Playwright deps)
+RUN npm install -g agent-browser && agent-browser install --with-deps
 
 # Install uv (move to /usr/local/bin so non-root user can access)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \

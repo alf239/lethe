@@ -335,6 +335,8 @@ install_dependencies() {
     if ! check_command agent-browser; then
         info "Installing agent-browser..."
         npm install -g agent-browser 2>/dev/null || maybe_sudo npm install -g agent-browser
+        info "Installing browser dependencies..."
+        agent-browser install --with-deps 2>/dev/null || maybe_sudo agent-browser install --with-deps
     fi
     success "agent-browser found"
     
