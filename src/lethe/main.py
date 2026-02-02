@@ -107,7 +107,19 @@ async def run():
                 except Exception as e:
                     await msg.answer(f"❌ Error: {e}")
             
-            if primary_chat_id:
+            # Check if we're running locally (can use local HTTP server)
+            # vs remotely (need Telegram-based flow)
+            is_local = os.environ.get("LETHE_REMOTE", "").lower() != "true"
+            
+            if is_local:
+                # Use local HTTP server to catch callback
+                console.print("[yellow]Claude Max authentication required![/yellow]")
+                console.print("[dim]Starting local server for OAuth callback...[/dim]")
+                await oauth_instance._authenticate_with_local_server()
+                console.print("[green]OAuth complete![/green]")
+                oauth_pending = False
+            elif primary_chat_id:
+                # Remote mode: use Telegram for OAuth flow
                 console.print("[yellow]Claude Max authentication required![/yellow]")
                 await oauth_bot.send_message(primary_chat_id, message)
                 console.print("[dim]Auth URL sent to Telegram. Waiting for /oauth command...[/dim]")

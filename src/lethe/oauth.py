@@ -303,17 +303,95 @@ class ClaudeOAuth:
             await self._send_message(f"❌ Authentication failed: {e}")
             raise
     
-    async def authenticate(self) -> str:
-        """Run OAuth flow - uses Telegram if configured, otherwise console.
+    async def authenticate(self, use_local_server: bool = True) -> str:
+        """Run OAuth flow.
+        
+        Args:
+            use_local_server: If True, starts local HTTP server to receive callback.
+                             If False, asks user to paste redirect URL manually.
         
         Returns:
             Access token
         """
-        # If Telegram callbacks are set, use Telegram flow
+        # If Telegram callbacks are set, use Telegram flow (manual URL paste)
         if self._send_message and self._receive_message:
             return await self.authenticate_via_telegram()
         
-        # Otherwise, use console flow with instructions
+        if use_local_server:
+            return await self._authenticate_with_local_server()
+        else:
+            return await self._authenticate_manual()
+    
+    async def _authenticate_with_local_server(self) -> str:
+        """Run OAuth with local HTTP server to catch callback."""
+        import webbrowser
+        
+        auth_url = self.start_auth_flow()
+        callback_received = asyncio.Event()
+        redirect_url_holder = {"url": None}
+        
+        async def handle_callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            # Read HTTP request
+            request_data = await reader.read(4096)
+            request = request_data.decode()
+            
+            # Extract path from request
+            if "GET /callback" in request:
+                # Get the full path with query params
+                first_line = request.split("\r\n")[0]
+                path = first_line.split()[1]
+                redirect_url_holder["url"] = f"http://localhost:19532{path}"
+                
+                # Send success response
+                response = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/html\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "<html><body style='font-family: sans-serif; text-align: center; padding: 50px;'>"
+                    "<h1>✅ Authentication Successful!</h1>"
+                    "<p>You can close this window and return to Lethe.</p>"
+                    "</body></html>"
+                )
+                writer.write(response.encode())
+                await writer.drain()
+                callback_received.set()
+            else:
+                writer.write(b"HTTP/1.1 404 Not Found\r\n\r\n")
+                await writer.drain()
+            
+            writer.close()
+            await writer.wait_closed()
+        
+        # Start local server
+        server = await asyncio.start_server(handle_callback, "localhost", 19532)
+        
+        print("\n" + "=" * 60)
+        print("CLAUDE MAX AUTHENTICATION")
+        print("=" * 60)
+        print("\nOpening browser for authentication...")
+        print(f"\nIf browser doesn't open, visit:\n{auth_url}\n")
+        print("Waiting for authentication...")
+        print("=" * 60)
+        
+        webbrowser.open(auth_url)
+        
+        try:
+            # Wait for callback (5 minute timeout)
+            await asyncio.wait_for(callback_received.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            raise ValueError("Authentication timed out after 5 minutes")
+        finally:
+            server.close()
+            await server.wait_closed()
+        
+        if not redirect_url_holder["url"]:
+            raise ValueError("No callback received")
+        
+        return await self.complete_auth_flow(redirect_url_holder["url"])
+    
+    async def _authenticate_manual(self) -> str:
+        """Run OAuth with manual URL paste (for remote/Telegram scenarios)."""
         auth_url = self.start_auth_flow()
         
         print("\n" + "=" * 60)
