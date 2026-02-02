@@ -35,9 +35,9 @@ RUN chown -R lethe:lethe /app /workspace
 
 USER lethe
 
-# Environment
-ENV LETHE_WORKSPACE_DIR=/workspace
-ENV LETHE_DATA_DIR=/workspace/data
+# Environment (must match pydantic-settings field names)
+ENV WORKSPACE_DIR=/workspace
+ENV MEMORY_DIR=/workspace/data/memory
 ENV LETHE_CONFIG_DIR=/app/config
 
 # Run
