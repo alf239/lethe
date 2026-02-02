@@ -184,6 +184,14 @@ class Hippocampus:
             Dict with keys: should_recall (bool), search_query (str|None), reason (str)
             Returns None if analysis fails
         """
+        # Handle multimodal content (list of parts) - extract text
+        if isinstance(message, list):
+            text_parts = []
+            for part in message:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+            message = " ".join(text_parts) if text_parts else "(image)"
+        
         if not self.analyzer:
             # Fallback: always recall with raw query
             return {"should_recall": True, "search_query": message[:100], "reason": "no analyzer"}
@@ -349,13 +357,13 @@ class Hippocampus:
     
     async def augment_message(
         self,
-        message: str,
+        message,  # Can be str or list (multimodal)
         recent_messages: Optional[list[dict]] = None,
-    ) -> str:
+    ):
         """Augment a user message with recalled memories.
         
         Args:
-            message: The user message
+            message: The user message (str or multimodal list)
             recent_messages: Recent conversation context
             
         Returns:
@@ -365,6 +373,10 @@ class Hippocampus:
         
         if recall:
             logger.info(f"Hippocampus recalled {len(recall)} chars of context")
+            # Handle multimodal content
+            if isinstance(message, list):
+                # Append recall as text part
+                return message + [{"type": "text", "text": f"\n\n{recall}"}]
             return f"{message}\n\n{recall}"
         
         return message
