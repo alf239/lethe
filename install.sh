@@ -193,19 +193,34 @@ prompt_api_key() {
     local key_name="${PROVIDER_KEYS[$SELECTED_PROVIDER]}"
     local key_url="${PROVIDER_URLS[$SELECTED_PROVIDER]}"
     
-    # Check if already have key in environment
+    # Check if already have key in environment or existing config
     local existing_key=""
+    local key_source=""
+    
+    # First check environment
     case $SELECTED_PROVIDER in
         openrouter) existing_key="${OPENROUTER_API_KEY:-}" ;;
         anthropic) existing_key="${ANTHROPIC_API_KEY:-}" ;;
         openai) existing_key="${OPENAI_API_KEY:-}" ;;
     esac
+    [ -n "$existing_key" ] && key_source="environment"
+    
+    # Then check existing config files
+    if [ -z "$existing_key" ] && [ -f "$CONFIG_DIR/container.env" ]; then
+        existing_key=$(grep "^$key_name=" "$CONFIG_DIR/container.env" 2>/dev/null | cut -d= -f2-)
+        [ -n "$existing_key" ] && key_source="$CONFIG_DIR/container.env"
+    fi
+    if [ -z "$existing_key" ] && [ -f "$CONFIG_DIR/.env" ]; then
+        existing_key=$(grep "^$key_name=" "$CONFIG_DIR/.env" 2>/dev/null | cut -d= -f2-)
+        [ -n "$existing_key" ] && key_source="$CONFIG_DIR/.env"
+    fi
     
     if [ -n "$existing_key" ]; then
         local masked_key="${existing_key:0:12}...${existing_key: -4}"
         echo ""
-        echo -e "${GREEN}Found existing $key_name in environment${NC}"
-        echo "   $masked_key"
+        echo -e "${GREEN}Found existing $key_name${NC}"
+        echo "   Source: $key_source"
+        echo "   Key: $masked_key"
         echo ""
         echo "  1) Use existing key"
         echo "  2) Enter a new key"
