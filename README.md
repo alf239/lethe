@@ -178,7 +178,7 @@ User message → Hippocampus → Augmented message → LLM
 - Searches archival memory (semantic + keyword hybrid)
 - Searches past conversations (excludes recent 5 messages)
 - Filters by relevance score (threshold: 0.3)
-- Max 3000 chars of context added
+- Max 50 lines of context added
 - Disable with `HIPPOCAMPUS_ENABLED=false`
 
 ## Conversation Manager

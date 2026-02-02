@@ -114,17 +114,18 @@ class TestHippocampus:
         
         assert result == "user question"
     
-    def test_recall_respects_max_chars(self, hippocampus, memory_store):
-        """Should truncate recalled memories to max_chars."""
-        long_memory = "x" * 5000
+    def test_recall_respects_max_lines(self, hippocampus, memory_store):
+        """Should limit recalled memories to max_lines."""
         memory_store.archival.search.return_value = [
-            {"text": long_memory, "score": 0.9, "created_at": "2024-01-01"}
+            {"text": f"memory {i}", "score": 0.9, "created_at": "2024-01-01"}
+            for i in range(20)
         ]
         memory_store.messages.search.return_value = []
         
-        result = hippocampus.recall("test", max_chars=1000)
+        result = hippocampus.recall("test", max_lines=5)
         
-        assert len(result) < 5000
+        # Should have at most 5 memory lines (plus header/footer)
+        assert result.count("- [") <= 5
     
     def test_build_query_uses_recent_context(self, hippocampus, memory_store):
         """Should include recent user messages in query."""

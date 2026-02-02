@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-# Max characters of recalled memories to include
-MAX_RECALL_CHARS = 3000
+# Max lines of recalled memories to include
+MAX_RECALL_LINES = 50
 
 # Minimum score threshold for including memories
 MIN_SCORE_THRESHOLD = 0.3
@@ -39,14 +39,14 @@ class Hippocampus:
         self,
         message: str,
         recent_messages: Optional[list[dict]] = None,
-        max_chars: int = MAX_RECALL_CHARS,
+        max_lines: int = MAX_RECALL_LINES,
     ) -> Optional[str]:
         """Recall relevant memories for a user message.
         
         Args:
             message: The new user message
             recent_messages: Recent conversation context (optional)
-            max_chars: Maximum characters of memories to return
+            max_lines: Maximum lines of memories to return
             
         Returns:
             Formatted memory recall string, or None if nothing relevant found
@@ -64,7 +64,7 @@ class Hippocampus:
         conversation_results = self._search_conversations(query, exclude_recent=5)
         
         # Combine and format results
-        memories = self._format_memories(archival_results, conversation_results, max_chars)
+        memories = self._format_memories(archival_results, conversation_results, max_lines)
         
         if not memories:
             return None
@@ -128,50 +128,44 @@ class Hippocampus:
         self,
         archival: list[dict],
         conversations: list[dict],
-        max_chars: int,
+        max_lines: int,
     ) -> Optional[str]:
         """Format retrieved memories into a context block."""
         if not archival and not conversations:
             return None
         
         sections = []
-        total_chars = 0
+        total_lines = 0
         
         # Format archival memories
         if archival:
             archival_lines = []
             for mem in archival:
+                if total_lines >= max_lines:
+                    break
+                    
                 text = mem.get("text", "")
-                score = mem.get("score", 0)
                 created = mem.get("created_at", "")[:10]  # Just date
                 
-                # Truncate if needed
-                if total_chars + len(text) > max_chars:
-                    remaining = max_chars - total_chars
-                    if remaining > 100:
-                        text = text[:remaining] + "..."
-                    else:
-                        break
-                
                 archival_lines.append(f"- [{created}] {text}")
-                total_chars += len(text)
+                total_lines += 1
             
             if archival_lines:
                 sections.append("**From long-term memory:**\n" + "\n".join(archival_lines))
         
         # Format conversation memories
-        if conversations and total_chars < max_chars:
+        if conversations and total_lines < max_lines:
             conv_lines = []
             for msg in conversations:
+                if total_lines >= max_lines:
+                    break
+                    
                 role = msg.get("role", "?")
-                content = msg.get("content", "")[:300]
+                content = msg.get("content", "")
                 created = msg.get("created_at", "")[:16].replace("T", " ")
                 
-                if total_chars + len(content) > max_chars:
-                    break
-                
                 conv_lines.append(f"- [{created}] {role}: {content}")
-                total_chars += len(content)
+                total_lines += 1
             
             if conv_lines:
                 sections.append("**From past conversations:**\n" + "\n".join(conv_lines))
