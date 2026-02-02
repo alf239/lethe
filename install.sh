@@ -319,6 +319,25 @@ install_dependencies() {
     fi
     success "git found"
     
+    # Install Node.js/npm if missing (needed for agent-browser)
+    if ! check_command npm; then
+        info "Installing Node.js..."
+        if [[ "$OS" == "mac" ]]; then
+            brew install node
+        elif check_command apt-get; then
+            maybe_sudo apt-get install -y nodejs npm
+        elif check_command dnf; then
+            maybe_sudo dnf install -y nodejs npm
+        fi
+    fi
+    
+    # Install agent-browser for browser automation
+    if ! check_command agent-browser; then
+        info "Installing agent-browser..."
+        npm install -g agent-browser 2>/dev/null || maybe_sudo npm install -g agent-browser
+    fi
+    success "agent-browser found"
+    
     # Install uv
     if ! check_command uv; then
         info "Installing uv (Python package manager)..."

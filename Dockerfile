@@ -7,7 +7,12 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
+
+# Install agent-browser for browser automation
+RUN npm install -g agent-browser
 
 # Install uv (move to /usr/local/bin so non-root user can access)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
