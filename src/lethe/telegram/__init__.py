@@ -188,41 +188,46 @@ class TelegramBot:
         return not allowed or user_id in allowed
 
     async def send_message(self, chat_id: int, text: str, parse_mode: str = "Markdown"):
-        """Send a message, splitting if too long."""
+        """Send a message, splitting on --- for natural pauses."""
         # Skip empty messages (some models return empty responses)
         if not text or not text.strip():
             logger.warning("Skipping empty message to Telegram")
             return
             
         MAX_LENGTH = 4000  # Telegram limit is 4096
-
-        if len(text) <= MAX_LENGTH:
-            try:
-                await self.bot.send_message(chat_id, text, parse_mode=parse_mode)
-            except Exception:
-                # Fallback to no parsing if markdown fails
-                await self.bot.send_message(chat_id, text, parse_mode=None)
-            return
-
-        # Split long messages
-        chunks = []
-        current = ""
-        for line in text.split("\n"):
-            if len(current) + len(line) + 1 > MAX_LENGTH:
+        
+        # Split on --- for natural message breaks (human-like texting)
+        # Each segment becomes a separate message with a pause
+        segments = [s.strip() for s in text.split("---") if s.strip()]
+        
+        for i, segment in enumerate(segments):
+            # Further split if segment is too long
+            if len(segment) <= MAX_LENGTH:
+                chunks = [segment]
+            else:
+                chunks = []
+                current = ""
+                for line in segment.split("\n"):
+                    if len(current) + len(line) + 1 > MAX_LENGTH:
+                        if current:
+                            chunks.append(current)
+                        current = line
+                    else:
+                        current = f"{current}\n{line}" if current else line
                 if current:
                     chunks.append(current)
-                current = line
-            else:
-                current = f"{current}\n{line}" if current else line
-        if current:
-            chunks.append(current)
-
-        for chunk in chunks:
-            try:
-                await self.bot.send_message(chat_id, chunk, parse_mode=parse_mode)
-            except Exception:
-                await self.bot.send_message(chat_id, chunk, parse_mode=None)
-            await asyncio.sleep(0.1)
+            
+            for chunk in chunks:
+                try:
+                    await self.bot.send_message(chat_id, chunk, parse_mode=parse_mode)
+                except Exception:
+                    # Fallback to no parsing if markdown fails
+                    await self.bot.send_message(chat_id, chunk, parse_mode=None)
+                await asyncio.sleep(0.1)
+            
+            # Pause between segments (natural typing feel)
+            if i < len(segments) - 1:
+                await asyncio.sleep(1.0 + len(segment) / 500)  # Longer pause for longer messages
 
     async def send_photo(self, chat_id: int, photo_path: str, caption: str = ""):
         """Send a photo to chat."""
