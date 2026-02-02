@@ -24,12 +24,13 @@ class MemoryStore:
     Blocks live in workspace for easy editing. Initialized from data/ templates.
     """
     
-    def __init__(self, data_dir: str = "data/memory", workspace_dir: str = "workspace"):
+    def __init__(self, data_dir: str = "data/memory", workspace_dir: str = "workspace", config_dir: str = "config"):
         """Initialize memory store.
         
         Args:
-            data_dir: Directory for persistent data (archival, messages, block templates)
+            data_dir: Directory for persistent data (archival, messages)
             workspace_dir: Working directory for blocks (agent reads/writes here)
+            config_dir: Directory with seed block templates
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -37,14 +38,16 @@ class MemoryStore:
         self.workspace_dir = Path(workspace_dir)
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         
+        self.config_dir = Path(config_dir)
+        
         # Connect to LanceDB (for archival and messages only)
         self.db = lancedb.connect(str(self.data_dir / "lancedb"))
         logger.info(f"Connected to LanceDB at {self.data_dir / 'lancedb'}")
         
-        # Initialize blocks in workspace, copying from data/ templates if needed
+        # Initialize blocks in workspace, copying from config/blocks/ seeds if needed
         blocks_workspace = self.workspace_dir / "memory"
         blocks_workspace.mkdir(parents=True, exist_ok=True)
-        self._init_blocks_from_templates(blocks_workspace)
+        self._init_blocks_from_templates(blocks_workspace, str(self.config_dir))
         
         # Initialize subsystems
         self.blocks = BlockManager(blocks_workspace)
@@ -53,10 +56,11 @@ class MemoryStore:
         
         logger.info("Memory store initialized")
     
-    def _init_blocks_from_templates(self, blocks_workspace: Path):
-        """Copy block templates from data/ to workspace if not present."""
-        templates_dir = self.data_dir / "blocks"
+    def _init_blocks_from_templates(self, blocks_workspace: Path, config_dir: str = "config"):
+        """Copy block seeds from config/blocks/ to workspace if not present."""
+        templates_dir = Path(config_dir) / "blocks"
         if not templates_dir.exists():
+            logger.debug(f"No seed blocks found at {templates_dir}")
             return
         
         for template_file in templates_dir.glob("*.md"):
@@ -64,7 +68,7 @@ class MemoryStore:
             if not target_file.exists():
                 # Copy content
                 target_file.write_text(template_file.read_text())
-                logger.info(f"Initialized block from template: {template_file.name}")
+                logger.info(f"Initialized block from seed: {template_file.name}")
                 
                 # Copy metadata if exists
                 meta_file = template_file.with_suffix(".meta.json")

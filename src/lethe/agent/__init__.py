@@ -32,6 +32,7 @@ class Agent:
         self.memory = MemoryStore(
             data_dir=str(self.settings.memory_dir),
             workspace_dir=str(self.settings.workspace_dir),
+            config_dir=str(self.settings.config_dir),
         )
         
         # Initialize hippocampus for memory recall
