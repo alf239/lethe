@@ -125,8 +125,15 @@ async def run():
     def signal_handler():
         logger.info("Received shutdown signal...")
         shutdown_event.set()
-        # Schedule force exit if graceful shutdown takes too long
-        loop.call_later(3, lambda: os._exit(0))
+        # Force exit after 3 seconds using a thread (not event loop)
+        # This ensures exit even if event loop is blocked
+        import threading
+        def force_exit():
+            import time
+            time.sleep(3)
+            logger.warning("Graceful shutdown timed out, forcing exit")
+            os._exit(0)
+        threading.Thread(target=force_exit, daemon=True).start()
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
