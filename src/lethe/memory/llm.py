@@ -83,11 +83,18 @@ class LLMConfig:
         # Set model from provider default if not set
         if not self.model:
             self.model = provider_config["default_model"]
+        else:
+            # Add provider prefix if needed (for litellm)
+            prefix = provider_config["model_prefix"]
+            if prefix and not self.model.startswith(prefix):
+                self.model = prefix + self.model
         
         # Verify API key exists
         env_key = provider_config["env_key"]
         if not os.environ.get(env_key):
             raise ValueError(f"{env_key} not set")
+        
+        logger.info(f"LLM config: provider={self.provider}, model={self.model}")
     
     def _detect_provider(self) -> str:
         """Auto-detect provider from available API keys."""
