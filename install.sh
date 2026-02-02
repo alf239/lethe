@@ -507,8 +507,9 @@ install_container_runtime() {
 setup_container() {
     info "Setting up container..."
     
-    # Create workspace directory
+    # Create workspace directory (with write permissions for container user)
     mkdir -p "$WORKSPACE_DIR"
+    chmod 777 "$WORKSPACE_DIR"
     
     # Build image
     cd "$INSTALL_DIR"
