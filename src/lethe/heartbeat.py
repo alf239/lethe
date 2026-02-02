@@ -34,18 +34,18 @@ End with either:
 """
 
 
-SUMMARIZE_HEARTBEAT_PROMPT = """You are evaluating a heartbeat check-in from an AI assistant.
-
-The assistant checked on pending tasks and gathered information. Here's their response:
+SUMMARIZE_HEARTBEAT_PROMPT = """Evaluate this AI assistant's heartbeat check-in:
 
 {response}
 
-Decide if this is worth sending to the user RIGHT NOW:
-- If it's just status updates, ponderings, or "everything is fine" → respond with just "ok"
-- If there's something genuinely urgent or time-sensitive → respond with a brief (1-2 sentence) message
+---
+RESPOND WITH EXACTLY ONE OF:
+1. The word "ok" (if nothing urgent)
+2. A brief 1-2 sentence message (only if genuinely time-sensitive)
 
-Think: "Would I interrupt someone's work for this?" If no, respond "ok".
-Only respond with "ok" or the brief message, nothing else."""
+Criteria: Would you interrupt someone's work for this? If not → "ok"
+
+YOUR RESPONSE (no reasoning, just ok or the message):"""
 
 
 class Heartbeat:
@@ -142,7 +142,20 @@ class Heartbeat:
             if self.summarize_callback:
                 prompt = SUMMARIZE_HEARTBEAT_PROMPT.format(response=response)
                 evaluated = await self.summarize_callback(prompt)
+                
+                # Strip model reasoning (some models output <think>...</think> blocks)
                 final_response = evaluated.strip() if evaluated else "ok"
+                if "</think>" in final_response:
+                    final_response = final_response.split("</think>")[-1].strip()
+                # Also handle reasoning_content that some models include
+                if final_response.startswith("The user is asking") or final_response.startswith("Analysis:"):
+                    # Model outputted reasoning, try to find actual answer
+                    lines = final_response.split("\n")
+                    # Take last non-empty line as the actual response
+                    for line in reversed(lines):
+                        if line.strip() and not line.startswith("So I"):
+                            final_response = line.strip()
+                            break
             else:
                 final_response = response.strip()
             
