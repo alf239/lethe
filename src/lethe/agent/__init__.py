@@ -184,7 +184,18 @@ I fixed it by doing Y
 ---
 should be working now
 </example_output>
-</output_format>"""
+</output_format>
+
+<telegram_tools>
+<rule>Use telegram_react tool to react to user's message with emoji BEFORE your text response</rule>
+<rule>React with 👍 for acknowledgment, ❤️ for appreciation, 😂 for funny, 🔥 for impressive, 👀 for interesting</rule>
+<rule>Reactions make conversation feel more natural and human</rule>
+
+<example>
+User: "I finally fixed that annoying bug!"
+Your response: First call telegram_react with emoji="🔥", then respond with text
+</example>
+</telegram_tools>"""
         
         return base_prompt + requirements
     
