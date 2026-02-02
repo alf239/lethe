@@ -134,6 +134,11 @@ class TelegramBot:
 
     async def send_message(self, chat_id: int, text: str, parse_mode: str = "Markdown"):
         """Send a message, splitting if too long."""
+        # Skip empty messages (some models return empty responses)
+        if not text or not text.strip():
+            logger.warning("Skipping empty message to Telegram")
+            return
+            
         MAX_LENGTH = 4000  # Telegram limit is 4096
 
         if len(text) <= MAX_LENGTH:
