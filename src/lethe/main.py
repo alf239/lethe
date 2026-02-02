@@ -59,7 +59,7 @@ async def run():
     # Initialize agent (tools auto-loaded)
     console.print("[dim]Initializing agent...[/dim]")
     agent = Agent(settings)
-    agent.initialize_default_blocks()
+    agent.refresh_memory_context()
     
     stats = agent.get_stats()
     console.print(f"[green]Agent ready[/green] - {stats['memory_blocks']} blocks, {stats['archival_memories']} memories")

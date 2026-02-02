@@ -263,29 +263,6 @@ class Agent:
             "llm": self.llm.get_context_stats(),
         }
     
-    def initialize_default_blocks(self):
-        """Initialize default memory blocks if they don't exist."""
-        defaults = [
-            ("persona", "Who I am and how I communicate. I evolve this as I develop my style.", 
-             "I am Lethe, an autonomous AI assistant. I communicate naturally and adapt to my user."),
-            ("human", "What I've learned about my human - their preferences, communication style, what matters to them. I update this to serve them better.", 
-             ""),
-            ("project", "Current project context and what we're working on together.", 
-             ""),
-        ]
-        
-        for label, description, default_value in defaults:
-            try:
-                if not self.memory.blocks.get_by_label(label):
-                    self.memory.blocks.create(
-                        label=label,
-                        value=default_value,
-                        description=description,
-                    )
-                    logger.info(f"Created default block: {label}")
-            except ValueError:
-                # Block already exists
-                pass
-        
-        # Refresh LLM context
+    def refresh_memory_context(self):
+        """Refresh LLM memory context from current blocks."""
         self.llm.update_memory_context(self.memory.get_context_for_prompt())
