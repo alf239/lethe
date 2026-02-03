@@ -319,7 +319,7 @@ should be working now
                 "_image_attachment": {"path": file_path}
             }
         
-        def view_image(file_path: str) -> dict:
+        def view_image(file_path: str, max_size: int = 1568) -> dict:
             """View an image file - the image will be shown to you in context.
             
             Use this to look at images on disk, screenshots you took, or images you generated.
@@ -327,9 +327,11 @@ should be working now
             
             Args:
                 file_path: Path to the image file to view
+                max_size: Max dimension in pixels (default 1568, Anthropic recommended)
             """
             import os
             import base64
+            from io import BytesIO
             
             if not os.path.exists(file_path):
                 return {"status": "error", "message": f"File not found: {file_path}"}
@@ -347,19 +349,53 @@ should be working now
             
             mime_type = mime_types[ext]
             
-            # Read and encode image
             try:
-                with open(file_path, 'rb') as f:
-                    image_data = base64.b64encode(f.read()).decode('utf-8')
+                # Try to resize with PIL if available
+                try:
+                    from PIL import Image
+                    
+                    with Image.open(file_path) as img:
+                        orig_size = f"{img.width}x{img.height}"
+                        
+                        # Resize if larger than max_size
+                        if img.width > max_size or img.height > max_size:
+                            # Calculate new size preserving aspect ratio
+                            ratio = min(max_size / img.width, max_size / img.height)
+                            new_size = (int(img.width * ratio), int(img.height * ratio))
+                            img = img.resize(new_size, Image.Resampling.LANCZOS)
+                            resized = f" (resized from {orig_size} to {img.width}x{img.height})"
+                        else:
+                            resized = ""
+                        
+                        # Convert to bytes
+                        buffer = BytesIO()
+                        # Use JPEG for better compression unless PNG needed for transparency
+                        if ext == 'png' and img.mode == 'RGBA':
+                            img.save(buffer, format='PNG', optimize=True)
+                            mime_type = 'image/png'
+                        else:
+                            # Convert to RGB for JPEG
+                            if img.mode in ('RGBA', 'P'):
+                                img = img.convert('RGB')
+                            img.save(buffer, format='JPEG', quality=85, optimize=True)
+                            mime_type = 'image/jpeg'
+                        
+                        image_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                        
+                except ImportError:
+                    # PIL not available, use raw file
+                    with open(file_path, 'rb') as f:
+                        image_data = base64.b64encode(f.read()).decode('utf-8')
+                    resized = " (not resized - PIL not installed)"
                 
-                # Check file size (limit to ~10MB base64)
-                if len(image_data) > 10_000_000:
-                    return {"status": "error", "message": f"Image too large: {len(image_data)//1_000_000}MB"}
+                # Check encoded size
+                if len(image_data) > 5_000_000:
+                    return {"status": "error", "message": f"Image too large after processing: {len(image_data)//1_000_000}MB"}
                 
                 # Return with _image_view to inject into context
                 return {
                     "status": "ok",
-                    "message": f"Viewing image: {file_path}",
+                    "message": f"Viewing image: {file_path}{resized}",
                     "_image_view": {
                         "path": file_path,
                         "mime_type": mime_type,
