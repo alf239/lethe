@@ -17,6 +17,21 @@ from litellm import acompletion, completion
 
 logger = logging.getLogger(__name__)
 
+
+def strip_thinking_tags(content: str) -> str:
+    """Strip <think>...</think> or <thinking>...</thinking> blocks from model output.
+    
+    Some models (Kimi, Claude with extended thinking) output reasoning in these tags.
+    """
+    import re
+    if not content:
+        return content
+    # Strip <think>...</think> and <thinking>...</thinking> blocks
+    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+    content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
+    return content.strip()
+
+
 # Suppress litellm's verbose logging
 litellm.suppress_debug_info = True
 
@@ -648,7 +663,7 @@ class AsyncLLMClient:
             assistant_msg = choice["message"]
             
             # Get content (might be present even with tool calls)
-            content = assistant_msg.get("content") or ""
+            content = strip_thinking_tags(assistant_msg.get("content") or "")
             
             # Handle tool calls
             tool_calls = assistant_msg.get("tool_calls")
@@ -752,7 +767,7 @@ class AsyncLLMClient:
                 content="[Please provide a brief response about what you just did]"
             ))
             response = await self._call_api_no_tools()
-            content = response["choices"][0]["message"].get("content", "")
+            content = strip_thinking_tags(response["choices"][0]["message"].get("content", ""))
             if content:
                 self.context.add_message(Message(role="assistant", content=content))
                 return content
@@ -774,7 +789,7 @@ class AsyncLLMClient:
         # Hit continuation limit - request final response without tools
         logger.warning(f"Max continuation depth reached, requesting final response")
         response = await self._call_api_no_tools()
-        content = response["choices"][0]["message"].get("content", "")
+        content = strip_thinking_tags(response["choices"][0]["message"].get("content", ""))
         
         if content:
             self.context.add_message(Message(role="assistant", content=content))
