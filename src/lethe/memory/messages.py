@@ -144,9 +144,15 @@ class MessageHistory:
         }
     
     def get_recent(self, limit: int = 20) -> List[dict]:
-        """Get recent messages (oldest first for context)."""
+        """Get recent messages (oldest first for context).
+        
+        Note: LanceDB doesn't reliably support ORDER BY, so we fetch more
+        results and sort in Python. Fetch 3x limit to ensure we get enough.
+        """
         table = self._get_table()
-        results = table.search().limit(limit + 10).to_list()
+        # Fetch extra to account for _init_ row and ensure we get newest
+        fetch_limit = max(limit * 3, 100)
+        results = table.search().limit(fetch_limit).to_list()
         
         messages = []
         for r in results:
@@ -160,6 +166,7 @@ class MessageHistory:
                 "created_at": r["created_at"],
             })
         
+        # Sort by created_at ascending, take last N (most recent)
         messages.sort(key=lambda m: m["created_at"])
         return messages[-limit:]
     

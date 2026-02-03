@@ -81,6 +81,7 @@ DEFAULT_MAX_OUTPUT = 8000  # tokens
 TOKEN_SAFETY_MARGIN = 1.3  # Safety margin for approximate token counting
 SLIDING_WINDOW_KEEP_RATIO = 0.7  # Keep 70% of context after compaction
 COMPACTION_TRIGGER_RATIO = 0.85  # Trigger compaction at 85% capacity
+SUMMARY_MAX_LINES = 30  # Max summary lines (truncate by lines, not chars)
 
 # Minimal heartbeat system prompt (lightweight, no full identity)
 HEARTBEAT_SYSTEM_PROMPT = """You are a background task checker. Your job is to:
@@ -92,15 +93,15 @@ Be concise. End with either:
 - A brief message if something needs attention NOW"""
 
 # Letta-style summarization prompt
-SUMMARIZE_PROMPT = """Your job is to summarize a history of previous messages in a conversation between an AI persona and a human.
-The conversation you are given is from a fixed context window and may not be complete.
-Messages sent by the AI are marked with the 'assistant' role.
-The AI can also make calls to tools, whose outputs can be seen in messages with the 'tool' role.
-Messages the user sends are in the 'user' role.
-The 'user' role is also used for important system events, such as heartbeat events.
-Summarize what happened in the conversation from the perspective of the AI (use first person).
-Keep your summary less than 100 words, do NOT exceed this word limit.
-Only output the summary, do NOT include anything else in your output."""
+SUMMARIZE_PROMPT = """Summarize this conversation concisely from the AI's perspective (first person).
+
+Focus on:
+- Key decisions and outcomes
+- Important facts learned about the user
+- Unresolved tasks or questions
+
+Keep it under 100 words. Be terse - bullet points are fine.
+Output ONLY the summary, nothing else."""
 
 
 @dataclass
@@ -173,9 +174,15 @@ class Message:
     """A conversation message."""
     role: str  # system, user, assistant, tool
     content: Union[str, List[Dict]]  # str or multimodal content list
+    created_at: Optional[datetime] = None  # timestamp for context display
     name: Optional[str] = None  # for tool messages
     tool_call_id: Optional[str] = None  # for tool results
     tool_calls: Optional[List[Dict]] = None  # for assistant tool calls
+    
+    def __post_init__(self):
+        """Set created_at if not provided."""
+        if self.created_at is None:
+            self.created_at = datetime.now(timezone.utc)
     
     def get_text_content(self) -> str:
         """Get text content for token counting and logging."""
@@ -189,6 +196,12 @@ class Message:
             elif part.get("type") == "image_url":
                 texts.append("[Image]")
         return " ".join(texts)
+    
+    def format_timestamp(self) -> str:
+        """Format timestamp for context display."""
+        if self.created_at:
+            return self.created_at.strftime("%Y-%m-%d %H:%M")
+        return ""
 
 
 @dataclass 
@@ -206,6 +219,7 @@ class ContextWindow:
     messages: List[Message] = field(default_factory=list)
     config: LLMConfig = field(default_factory=LLMConfig)
     summary: str = ""  # Summary of older messages
+    total_messages_db: int = 0  # Total messages in database (set by caller)
     _summarizer: Optional[Callable] = None  # Set by LLMClient
     
     def count_tokens(self, text: str) -> int:
@@ -255,18 +269,23 @@ class ContextWindow:
                 continue
             
             content = msg.get("content", "")
-            # Prepend timestamp if available
-            if msg.get("created_at"):
-                timestamp = msg["created_at"][:16].replace("T", " ")  # "2026-02-02 10:30"
-                content = f"[{timestamp}] {content}"
             
             # Skip assistant messages that were just tool calls (no text content)
             if role == "assistant" and not content:
                 continue
             
+            # Parse created_at from database
+            created_at = None
+            if msg.get("created_at"):
+                try:
+                    created_at = datetime.fromisoformat(msg["created_at"].replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    created_at = datetime.now(timezone.utc)
+            
             self.messages.append(Message(
                 role=role,
                 content=content,
+                created_at=created_at,
             ))
         # Compress if needed after loading
         self._compress_if_needed()
@@ -314,21 +333,23 @@ class ContextWindow:
         if self._summarizer and to_summarize:
             new_summary = self._summarizer(to_summarize, self.summary)
             if new_summary:
-                # Clip summary to reasonable length (Letta uses 50k chars default)
-                if len(new_summary) > 50000:
-                    new_summary = new_summary[:50000] + "\n[Summary truncated...]"
+                # Truncate by lines if too long
+                lines = new_summary.strip().split("\n")
+                if len(lines) > SUMMARY_MAX_LINES:
+                    new_summary = "\n".join(lines[:SUMMARY_MAX_LINES]) + f"\n[...truncated, {len(lines) - SUMMARY_MAX_LINES} more lines]"
                 self.summary = new_summary
-                logger.info(f"Summary updated: {len(self.summary)} chars")
+                logger.info(f"Summary updated: {len(self.summary)} chars, {len(lines)} lines")
         else:
             # Fallback: text-based summary
-            old_text = "\n".join(f"{m.role}: {m.get_text_content()[:300]}" for m in to_summarize[-10:])
+            old_text = "\n".join(f"{m.role}: {m.get_text_content()[:200]}" for m in to_summarize[-5:])
             if self.summary:
-                self.summary = f"{self.summary}\n\n[Additional context from {len(to_summarize)} messages]\n{old_text}"
+                self.summary = f"{self.summary}\n[+{len(to_summarize)} messages]\n{old_text}"
             else:
-                self.summary = f"[Summary of {len(to_summarize)} previous messages]\n{old_text}"
-            # Clip fallback summary too
-            if len(self.summary) > 50000:
-                self.summary = self.summary[:50000] + "\n[Summary truncated...]"
+                self.summary = f"[Summary of {len(to_summarize)} messages]\n{old_text}"
+            # Truncate by lines
+            lines = self.summary.strip().split("\n")
+            if len(lines) > SUMMARY_MAX_LINES:
+                self.summary = "\n".join(lines[:SUMMARY_MAX_LINES]) + f"\n[...truncated, {len(lines) - SUMMARY_MAX_LINES} more lines]"
     
     def get_stats(self) -> dict:
         """Get context window statistics."""
@@ -345,6 +366,7 @@ class ContextWindow:
             "available": available,
             "utilization": f"{(total_used / self.config.context_limit * 100):.1f}%",
             "message_count": len(self.messages),
+            "total_messages_db": self.total_messages_db,
             "summary_chars": len(self.summary),
             "compaction_threshold": f"{COMPACTION_TRIGGER_RATIO * 100:.0f}%",
             "keep_ratio": f"{SLIDING_WINDOW_KEEP_RATIO * 100:.0f}%",
@@ -384,31 +406,42 @@ class ContextWindow:
             self.messages = clean_messages
     
     def build_messages(self) -> List[Dict]:
-        """Build messages array for API call."""
+        """Build messages array for API call (Letta-style structure)."""
         # Clean orphaned tool messages before building
         self._clean_orphaned_tool_messages()
         
-        # Combine system prompt with memory context and summary
-        system_content = f"""{self.system_prompt}
-
-<memory>
-{self.memory_context}
-</memory>
-"""
+        # Build system content with clear sections
+        system_parts = []
         
+        # 1. System prompt (persona + rules)
+        system_parts.append(self.system_prompt)
+        
+        # 2. Memory blocks + metadata (Letta-style, already formatted by MemoryStore)
+        if self.memory_context:
+            system_parts.append(self.memory_context)
+        
+        # 3. Conversation summary (if any)
         if self.summary:
-            system_content += f"""
+            system_parts.append(f"""
 <conversation_summary>
 {self.summary}
-</conversation_summary>
-"""
+</conversation_summary>""")
         
-        system_content += f"\nCurrent time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        system_content = "\n".join(system_parts)
         
         messages = [{"role": "system", "content": system_content}]
         
+        # Build message array with timestamps
         for msg in self.messages:
-            m = {"role": msg.role, "content": msg.content}
+            # Format content with timestamp for user/assistant messages
+            content = msg.content
+            if msg.role in ("user", "assistant") and not msg.tool_calls:
+                # Don't add timestamp to tool-related messages
+                timestamp = msg.format_timestamp()
+                if timestamp and isinstance(content, str):
+                    content = f"[{timestamp}] {content}"
+            
+            m = {"role": msg.role, "content": content}
             if msg.name:
                 m["name"] = msg.name
             if msg.tool_call_id:
