@@ -130,8 +130,21 @@ class Agent:
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
+            
+            # Handle multimodal content - extract text only
             if isinstance(content, list):
-                content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+                text_parts = []
+                for p in content:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        text_parts.append(p.get("text", ""))
+                    elif isinstance(p, dict) and p.get("type") == "image_url":
+                        text_parts.append("[image]")
+                content = " ".join(text_parts)
+            
+            # Skip base64 content and huge messages
+            if "base64" in content or len(content) > 10000:
+                content = f"[large content skipped: {len(content)} chars]"
+            
             formatted.append(f"{role}: {content[:500]}")
         
         messages_text = "\n".join(formatted)

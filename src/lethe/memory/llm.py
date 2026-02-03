@@ -270,6 +270,28 @@ class ContextWindow:
             
             content = msg.get("content", "")
             
+            # Handle multimodal content - extract text, skip base64
+            if isinstance(content, str) and content.startswith("["):
+                try:
+                    import json
+                    parsed = json.loads(content)
+                    if isinstance(parsed, list):
+                        text_parts = []
+                        for p in parsed:
+                            if isinstance(p, dict):
+                                if p.get("type") == "text":
+                                    text_parts.append(p.get("text", ""))
+                                elif p.get("type") == "image_url":
+                                    # Skip base64 images, just note they existed
+                                    text_parts.append("[image]")
+                        content = " ".join(text_parts)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            
+            # Skip huge messages (likely base64 or other binary content)
+            if len(str(content)) > 50000:
+                content = f"[large content: {len(str(content))} chars]"
+            
             # Skip assistant messages that were just tool calls (no text content)
             if role == "assistant" and not content:
                 continue
