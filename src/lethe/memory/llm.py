@@ -808,6 +808,33 @@ class AsyncLLMClient:
             kwargs["api_base"] = self.config.api_base
         return kwargs
     
+    async def _call_with_retry(self, kwargs: Dict, log_type: str, max_retries: int = 3) -> Dict:
+        """Make API call with retry logic for transient errors."""
+        import asyncio
+        
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = await acompletion(**kwargs)
+                result = response.model_dump()
+                _log_llm_interaction(kwargs, result, log_type)
+                return result
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                # Retry on transient errors (rate limits, provider errors, timeouts)
+                if any(x in error_str for x in ["rate", "limit", "timeout", "provider", "overloaded", "503", "429"]):
+                    wait_time = (attempt + 1) * 2  # 2, 4, 6 seconds
+                    logger.warning(f"API error (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Non-retryable error, raise immediately
+                    raise
+        
+        # All retries failed
+        logger.error(f"API call failed after {max_retries} attempts: {last_error}")
+        raise last_error
+    
     async def _call_api(self) -> Dict:
         """Make API call via litellm."""
         messages = self.context.build_messages()
@@ -820,13 +847,7 @@ class AsyncLLMClient:
         
         logger.debug(f"API call: {len(messages)} messages, {len(self.tools)} tools")
         
-        response = await acompletion(**kwargs)
-        result = response.model_dump()
-        
-        # Debug logging
-        _log_llm_interaction(kwargs, result, "chat")
-        
-        return result
+        return await self._call_with_retry(kwargs, "chat")
     
     async def _call_api_no_tools(self) -> Dict:
         """Make API call without tools (for final response after hitting limit)."""
@@ -837,12 +858,7 @@ class AsyncLLMClient:
         
         logger.debug(f"API call (no tools): {len(messages)} messages")
         
-        response = await acompletion(**kwargs)
-        result = response.model_dump()
-        
-        _log_llm_interaction(kwargs, result, "chat_no_tools")
-        
-        return result
+        return await self._call_with_retry(kwargs, "chat_no_tools")
     
     async def complete(self, prompt: str, use_aux: bool = False) -> str:
         """Simple completion without tools or context management.
@@ -865,12 +881,10 @@ class AsyncLLMClient:
         if use_aux:
             kwargs["model"] = self.config.model_aux
         
-        response = await acompletion(**kwargs)
-        result = response.model_dump()
+        log_type = "complete" if not use_aux else "complete_aux"
+        result = await self._call_with_retry(kwargs, log_type)
         
-        _log_llm_interaction(kwargs, result, "complete" if not use_aux else "complete_aux")
-        
-        return response.choices[0].message.content or ""
+        return result["choices"][0]["message"].get("content") or ""
     
     async def heartbeat(self, message: str) -> str:
         """Process heartbeat with minimal context and aux model.
@@ -908,25 +922,25 @@ class AsyncLLMClient:
         
         # Simple loop for tool calls (max 3 iterations)
         for _ in range(3):
-            response = await acompletion(**kwargs)
-            result = response.model_dump()
-            _log_llm_interaction(kwargs, result, "heartbeat")
+            result = await self._call_with_retry(kwargs, "heartbeat")
             
-            choice = response.choices[0]
+            choice = result["choices"][0]
+            message = choice["message"]
+            tool_calls = message.get("tool_calls")
             
             # Check for tool calls
-            if choice.message.tool_calls:
+            if tool_calls:
                 # Execute tools and add results
-                kwargs["messages"].append(choice.message.model_dump())
+                kwargs["messages"].append(message)
                 
-                for tool_call in choice.message.tool_calls:
-                    func_name = tool_call.function.name.strip()
+                for tool_call in tool_calls:
+                    func_name = tool_call["function"]["name"].strip()
                     func = self.get_tool(func_name)
                     
                     if func:
                         try:
                             import json
-                            args = json.loads(tool_call.function.arguments)
+                            args = json.loads(tool_call["function"]["arguments"])
                             if asyncio.iscoroutinefunction(func):
                                 tool_result = await func(**args)
                             else:
@@ -938,12 +952,12 @@ class AsyncLLMClient:
                     
                     kwargs["messages"].append({
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call["id"],
                         "content": str(tool_result)[:2000],
                     })
             else:
                 # No tool calls, return response
-                return choice.message.content or "ok"
+                return message.get("content") or "ok"
         
         return "ok"  # Max iterations reached
     
