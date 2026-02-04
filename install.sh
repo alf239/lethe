@@ -284,6 +284,37 @@ prompt_telegram() {
     echo -e "${YELLOW}Telegram Configuration:${NC}"
     echo ""
     
+    # Check for existing Telegram config
+    local existing_token=""
+    local existing_user_id=""
+    local config_source=""
+    
+    for config_file in "$CONFIG_DIR/container.env" "$CONFIG_DIR/.env" ".env"; do
+        if [ -f "$config_file" ]; then
+            [ -z "$existing_token" ] && existing_token=$(grep "^TELEGRAM_BOT_TOKEN=" "$config_file" 2>/dev/null | cut -d= -f2-)
+            [ -z "$existing_user_id" ] && existing_user_id=$(grep "^TELEGRAM_ALLOWED_USER_IDS=" "$config_file" 2>/dev/null | cut -d= -f2-)
+            [ -n "$existing_token" ] && [ -z "$config_source" ] && config_source="$config_file"
+        fi
+    done
+    
+    # If existing config found, offer to reuse
+    if [ -n "$existing_token" ] && [ -n "$existing_user_id" ]; then
+        echo -e "${GREEN}Found existing Telegram configuration in $config_source${NC}"
+        echo "   Bot Token: ${existing_token:0:10}...${existing_token: -5}"
+        echo "   User ID: $existing_user_id"
+        echo ""
+        read -p "   Use existing configuration? [Y/n]: " reuse_config < /dev/tty
+        reuse_config=${reuse_config:-Y}
+        
+        if [[ "$reuse_config" =~ ^[Yy] ]]; then
+            TELEGRAM_TOKEN="$existing_token"
+            TELEGRAM_USER_ID="$existing_user_id"
+            success "Using existing Telegram configuration"
+            return
+        fi
+        echo ""
+    fi
+    
     echo -e "${BLUE}1. Telegram Bot Token${NC}"
     echo "   Create a bot: message @BotFather on Telegram → /newbot → copy the token"
     echo ""
@@ -606,9 +637,31 @@ install_deps_and_run() {
 }
 
 detect_container_runtime() {
-    if command -v podman &>/dev/null; then
+    local has_podman=false
+    local has_docker=false
+    
+    command -v podman &>/dev/null && has_podman=true
+    command -v docker &>/dev/null && has_docker=true
+    
+    if $has_podman && $has_docker; then
+        # Both available - offer selection
+        echo ""
+        echo -e "${YELLOW}Multiple container runtimes detected:${NC}"
+        echo "  1) Podman (recommended for rootless)"
+        echo "  2) Docker"
+        echo ""
+        read -p "Select container runtime [1]: " choice < /dev/tty
+        choice=${choice:-1}
+        
+        if [[ "$choice" == "2" ]]; then
+            CONTAINER_CMD="docker"
+        else
+            CONTAINER_CMD="podman"
+        fi
+        success "Using $CONTAINER_CMD"
+    elif $has_podman; then
         CONTAINER_CMD="podman"
-    elif command -v docker &>/dev/null; then
+    elif $has_docker; then
         CONTAINER_CMD="docker"
     else
         CONTAINER_CMD=""

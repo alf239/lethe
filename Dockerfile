@@ -3,7 +3,7 @@
 
 FROM python:3.12-slim
 
-# Install system dependencies + gosu for user switching
+# Install system dependencies + common tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -11,6 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     sudo \
     gosu \
+    # Common tools the agent might need
+    imagemagick \
+    qpdf \
+    poppler-utils \
+    ffmpeg \
+    jq \
+    wget \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install agent-browser for browser automation (with Playwright deps)

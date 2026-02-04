@@ -94,6 +94,14 @@ def bash(
     cwd = os.environ.get("USER_CWD", os.getcwd())
     env = {**os.environ}
     
+    # Auto-prepend sudo for package manager commands (needed in containers)
+    # Only if not already using sudo and we're not root
+    if os.getuid() != 0:
+        apt_commands = ("apt-get ", "apt ", "dpkg ", "apt-cache ")
+        cmd_stripped = command.strip()
+        if cmd_stripped.startswith(apt_commands) and not cmd_stripped.startswith("sudo"):
+            command = f"sudo {command}"
+    
     # Clamp timeout
     effective_timeout = max(1, min(timeout, MAX_TIMEOUT))
     
