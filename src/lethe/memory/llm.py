@@ -808,7 +808,7 @@ class AsyncLLMClient:
             kwargs["api_base"] = self.config.api_base
         return kwargs
     
-    async def _call_with_retry(self, kwargs: Dict, log_type: str, max_retries: int = 3) -> Dict:
+    async def _call_with_retry(self, kwargs: Dict, log_type: str, max_retries: int = 5) -> Dict:
         """Make API call with retry logic for transient errors."""
         import asyncio
         
@@ -822,10 +822,22 @@ class AsyncLLMClient:
             except Exception as e:
                 last_error = e
                 error_str = str(e).lower()
-                # Retry on transient errors (rate limits, provider errors, timeouts)
-                if any(x in error_str for x in ["rate", "limit", "timeout", "provider", "overloaded", "503", "429"]):
-                    wait_time = (attempt + 1) * 2  # 2, 4, 6 seconds
-                    logger.warning(f"API error (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                
+                # Check if it's a rate limit error (needs longer wait)
+                is_rate_limit = any(x in error_str for x in ["rate_limit", "rate limit", "429", "too many requests"])
+                
+                # Check if it's a transient error (shorter wait)
+                is_transient = any(x in error_str for x in ["timeout", "provider", "overloaded", "503", "502", "500"])
+                
+                if is_rate_limit:
+                    # Rate limit: wait longer, up to 60 seconds
+                    wait_time = min(60, 15 * (attempt + 1))  # 15, 30, 45, 60, 60
+                    logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}), waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                elif is_transient:
+                    # Transient error: shorter exponential backoff
+                    wait_time = (attempt + 1) * 2  # 2, 4, 6, 8, 10 seconds
+                    logger.warning(f"Transient error (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
                     await asyncio.sleep(wait_time)
                 else:
                     # Non-retryable error, raise immediately
