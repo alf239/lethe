@@ -463,6 +463,20 @@ setup_service() {
 setup_systemd() {
     mkdir -p "$HOME/.config/systemd/user"
     
+    # Enable lingering so user services run without login session
+    if command -v loginctl &>/dev/null; then
+        info "Enabling user lingering (allows service to run without login)..."
+        maybe_sudo loginctl enable-linger "$(whoami)" 2>/dev/null || true
+    fi
+    
+    # Ensure XDG_RUNTIME_DIR is set (needed for systemd --user)
+    if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+        if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+            warn "XDG_RUNTIME_DIR not available. You may need to log in directly (not via su/sudo)."
+        fi
+    fi
+    
     cat > "$HOME/.config/systemd/user/lethe.service" << EOF
 [Unit]
 Description=Lethe Autonomous AI Agent
@@ -480,7 +494,23 @@ Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 WantedBy=default.target
 EOF
 
-    systemctl --user daemon-reload
+    # Try to start the service, with helpful error message if it fails
+    if ! systemctl --user daemon-reload 2>/dev/null; then
+        warn "Could not connect to systemd user bus."
+        echo ""
+        echo "  This usually means you're not in a proper login session."
+        echo "  Try one of these:"
+        echo "    1. Log out and log back in"
+        echo "    2. Run: machinectl shell $(whoami)@"
+        echo "    3. For SSH: ssh -t user@host 'bash -l'"
+        echo ""
+        echo "  After that, run:"
+        echo "    systemctl --user daemon-reload"
+        echo "    systemctl --user enable --now lethe"
+        echo ""
+        return
+    fi
+    
     systemctl --user enable lethe
     systemctl --user start lethe
     
