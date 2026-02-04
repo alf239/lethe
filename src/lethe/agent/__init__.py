@@ -161,41 +161,21 @@ Summary:"""
             return ""
     
     def _build_system_prompt(self) -> str:
-        """Build system prompt with rules (persona is in memory_blocks, not duplicated here)."""
-        # Minimal base - persona details are in memory_blocks section
-        base_prompt = "You are Lethe, an autonomous AI assistant with persistent memory."
+        """Build system prompt from identity memory block.
         
-        # Hard requirements appended to all prompts (XML tags work better with Kimi)
-        requirements = """
-
-<output_format>
-<rule>You MUST split ALL responses using the delimiter --- on its own line</rule>
-<rule>Each --- becomes a separate Telegram message bubble</rule>
-<rule>Maximum 1-2 sentences per segment</rule>
-<rule>NEVER write more than 2 sentences without a --- separator</rule>
-
-<example_input>User asks how you're doing</example_input>
-<example_output>
-doing pretty well actually! 😊
----
-been keeping busy with various tasks
----
-how about you?
-</example_output>
-
-<example_input>User asks you to explain something</example_input>
-<example_output>
-ok so here's the deal
----
-the main issue was X
----
-I fixed it by doing Y
----
-should be working now
-</example_output>
-</output_format>"""
+        Identity block should contain:
+        - Who you are (role, name, background)
+        - Behavioral cues and roleplay instructions  
+        - Communication style and output format rules
+        """
+        # Load identity from memory block
+        identity_block = self.memory.blocks.get("identity")
+        if identity_block:
+            return identity_block
         
-        return base_prompt + requirements
+        # Fallback if no identity block exists
+        logger.warning("No 'identity' memory block found, using minimal fallback")
+        return "You are an AI assistant with persistent memory."
     
     async def _summarize_memories(self, prompt: str) -> str:
         """Summarize memories using LLM (for hippocampus)."""

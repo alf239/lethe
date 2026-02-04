@@ -102,8 +102,12 @@ class MemoryStore:
             for i, block in enumerate(blocks):
                 if block.get("hidden"):
                     continue
-                    
+                
                 label = block["label"]
+                
+                # Skip identity block - it's used as system prompt, not in memory_blocks
+                if label == "identity":
+                    continue
                 value = block["value"] or ""
                 description = block.get("description") or ""
                 limit = block.get("limit") or 20000
