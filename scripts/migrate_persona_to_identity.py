@@ -167,12 +167,13 @@ Plus long-term archival memory you can search. Your history together matters to 
         capabilities_meta_path.write_text(json.dumps(capabilities_meta, indent=2))
         print(f"✓ Created {capabilities_meta_path}")
     
-    # Optionally remove old persona files
-    print(f"\n⚠ Old persona files kept for backup:")
-    print(f"  - {persona_path}")
+    # Remove old persona files (identity.md now has the content)
+    print(f"\nRemoving old persona files...")
+    persona_path.unlink()
+    print(f"  ✓ Deleted {persona_path}")
     if persona_meta_path.exists():
-        print(f"  - {persona_meta_path}")
-    print(f"\nTo complete migration, manually delete them after verifying identity.md is correct.")
+        persona_meta_path.unlink()
+        print(f"  ✓ Deleted {persona_meta_path}")
     
     return True
 
