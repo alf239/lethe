@@ -184,9 +184,16 @@ class Message:
     tool_calls: Optional[List[Dict]] = None  # for assistant tool calls
     
     def __post_init__(self):
-        """Set created_at if not provided."""
+        """Set created_at if not provided. Sanitize tool IDs for Anthropic."""
         if self.created_at is None:
             self.created_at = datetime.now(timezone.utc)
+        # Anthropic requires tool_call IDs to match ^[a-zA-Z0-9-]+$
+        if self.tool_call_id:
+            self.tool_call_id = self.tool_call_id.replace("_", "-")
+        if self.tool_calls:
+            for tc in self.tool_calls:
+                if "id" in tc:
+                    tc["id"] = tc["id"].replace("_", "-")
     
     def get_text_content(self) -> str:
         """Get text content for token counting and logging."""
