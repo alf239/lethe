@@ -51,10 +51,15 @@ class Agent:
         # Get memory context
         memory_context = self.memory.get_context_for_prompt()
         
+        # Persistence callback for tool messages
+        def persist_message(role: str, content, metadata: dict = None):
+            self.memory.messages.add(role, content, metadata=metadata)
+        
         self.llm = AsyncLLMClient(
             config=llm_config,
             system_prompt=system_prompt,
             memory_context=memory_context,
+            on_message_persist=persist_message,
         )
         
         # Initialize hippocampus with LLM functions (analyzer + summarizer use aux model)

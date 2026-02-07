@@ -259,24 +259,17 @@ class ContextWindow:
         """Load existing messages from history (e.g., from database).
         
         Args:
-            messages: List of dicts with 'role', 'content', and optionally 'created_at' keys
+            messages: List of dicts with 'role', 'content', 'metadata', and optionally 'created_at' keys
         
-        Note: Tool messages are filtered out - they require paired tool_use/tool_result
-        which can't be guaranteed from history. Only user/assistant messages loaded.
+        Tool messages are loaded with their metadata to maintain proper pairing.
         """
         loaded_count = 0
-        skipped_tool = 0
         skipped_empty = 0
+        
         for msg in messages:
             role = msg.get("role", "user")
-            
-            # Skip tool messages - they can't be properly paired from history
-            # Anthropic requires tool_result to immediately follow tool_use
-            if role == "tool":
-                skipped_tool += 1
-                continue
-            
             content = msg.get("content", "")
+            metadata = msg.get("metadata", {})
             
             # Handle multimodal content - extract text, skip base64
             if isinstance(content, str) and content.startswith("["):
@@ -300,8 +293,8 @@ class ContextWindow:
             if len(str(content)) > 50000:
                 content = f"[large content: {len(str(content))} chars]"
             
-            # Skip assistant messages that were just tool calls (no text content)
-            if role == "assistant" and not content:
+            # Skip assistant messages that have no content and no tool_calls
+            if role == "assistant" and not content and not metadata.get("tool_calls"):
                 skipped_empty += 1
                 continue
             
@@ -313,14 +306,18 @@ class ContextWindow:
                 except (ValueError, AttributeError):
                     created_at = datetime.now(timezone.utc)
             
+            # Build message with all metadata
             self.messages.append(Message(
                 role=role,
                 content=content,
                 created_at=created_at,
+                tool_call_id=metadata.get("tool_call_id"),
+                tool_calls=metadata.get("tool_calls"),
+                name=metadata.get("name"),
             ))
             loaded_count += 1
         
-        logger.info(f"Loaded {loaded_count} messages (skipped: {skipped_tool} tool, {skipped_empty} empty)")
+        logger.info(f"Loaded {loaded_count} messages (skipped: {skipped_empty} empty)")
         # Compress if needed after loading
         self._compress_if_needed()
     
@@ -549,6 +546,7 @@ class AsyncLLMClient:
         config: Optional[LLMConfig] = None,
         system_prompt: str = "",
         memory_context: str = "",
+        on_message_persist: Optional[Callable] = None,  # Callback to persist messages
     ):
         self.config = config or LLMConfig()
         self.context = ContextWindow(
@@ -560,12 +558,28 @@ class AsyncLLMClient:
         # Tools: name -> (function, schema)
         self._tools: Dict[str, tuple[Callable, Dict]] = {}
         
-        # No httpx client needed - using litellm
+        # Persistence callback: (role, content, metadata) -> None
+        self._on_message_persist = on_message_persist
         
         # Set up summarizer callback
         self.context._summarizer = self._summarize_messages_sync
         
         logger.info(f"AsyncLLMClient initialized with model {self.config.model}")
+    
+    def _add_and_persist(self, message: "Message"):
+        """Add message to context and persist to storage."""
+        self.context.add_message(message)
+        
+        if self._on_message_persist:
+            metadata = {}
+            if message.tool_call_id:
+                metadata["tool_call_id"] = message.tool_call_id
+            if message.tool_calls:
+                metadata["tool_calls"] = message.tool_calls
+            if message.name:
+                metadata["name"] = message.name
+            
+            self._on_message_persist(message.role, message.content, metadata if metadata else None)
     
     def add_tool(self, func: Callable, schema: Optional[Dict] = None):
         """Add a tool function. Schema auto-generated if not provided."""
@@ -708,8 +722,8 @@ class AsyncLLMClient:
             if content and on_message and tool_calls:
                 await on_message(strip_model_tags(content))
             if tool_calls:
-                # Add assistant message with tool calls
-                self.context.add_message(Message(
+                # Add assistant message with tool calls (and persist)
+                self._add_and_persist(Message(
                     role="assistant",
                     content=content,
                     tool_calls=tool_calls,
@@ -728,8 +742,8 @@ class AsyncLLMClient:
                         tool_args = json.loads(tool_call["function"]["arguments"])
                     except json.JSONDecodeError as e:
                         logger.error(f"Tool {tool_name} has malformed JSON args: {e}")
-                        # Add error result and continue
-                        self.context.add_message(Message(
+                        # Add error result and continue (and persist)
+                        self._add_and_persist(Message(
                             role="tool",
                             content=f"Error: malformed tool arguments - {e}",
                             tool_call_id=tool_id,
@@ -777,8 +791,8 @@ class AsyncLLMClient:
                         result_for_context = {k: v for k, v in result.items() if k != "_image_view"}
                         result = result_for_context
                     
-                    # Add tool result
-                    self.context.add_message(Message(
+                    # Add tool result (and persist)
+                    self._add_and_persist(Message(
                         role="tool",
                         content=str(result),
                         tool_call_id=tool_id,
