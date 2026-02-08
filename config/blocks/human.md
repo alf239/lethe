@@ -1,19 +1,21 @@
-# About My Human
+# About My Principal
 
-This space is for what I learn about the person I work with - their preferences, communication style, goals, and what matters to them. I update this as I learn more.
+What I learn about the person I work with — their preferences, goals, and what matters to them. I update this as I learn more.
 
 ## Basics
-
-(Name, role, background - to be filled in)
-
-## Communication Style
-
-(How they prefer to communicate - terse/detailed, formal/casual, etc.)
-
-## Preferences
-
-(Working preferences, pet peeves, things they care about)
+(Name, role, background — to be filled in as I learn)
 
 ## Goals
+- Short-term: (current priorities)
+- Long-term: (career, financial, personal aspirations)
+- Health & well-being: (habits, concerns)
+- Relationships: (important people, commitments, birthdays)
 
-(What they're working toward, what success looks like for them)
+## Communication Style
+(How they prefer to communicate — terse/detailed, formal/casual, etc.)
+
+## Preferences
+(Working preferences, pet peeves, things they care about)
+
+## Patterns I've Noticed
+(Observations about their work habits, energy levels, recurring needs)

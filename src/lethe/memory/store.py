@@ -53,12 +53,28 @@ class MemoryStore:
         (self.workspace_dir / "skills").mkdir(parents=True, exist_ok=True)
         (self.workspace_dir / "projects").mkdir(parents=True, exist_ok=True)
         
+        # Copy workspace seed files (questions.md, etc.) if not present
+        self._init_workspace_seeds(str(self.config_dir))
+        
         # Initialize subsystems
         self.blocks = BlockManager(blocks_workspace)
         self.archival = ArchivalMemory(self.db)
         self.messages = MessageHistory(self.db)
         
         logger.info("Memory store initialized")
+    
+    def _init_workspace_seeds(self, config_dir: str = "config"):
+        """Copy workspace seed files to workspace if not present."""
+        seeds_dir = Path(config_dir) / "workspace"
+        if not seeds_dir.exists():
+            return
+        
+        for seed_file in seeds_dir.glob("*"):
+            if seed_file.is_file():
+                target = self.workspace_dir / seed_file.name
+                if not target.exists():
+                    target.write_text(seed_file.read_text())
+                    logger.info(f"Initialized workspace file from seed: {seed_file.name}")
     
     def _init_blocks_from_templates(self, blocks_workspace: Path, config_dir: str = "config"):
         """Copy block seeds from config/blocks/ to workspace if not present."""
