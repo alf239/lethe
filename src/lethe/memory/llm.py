@@ -930,8 +930,23 @@ class AsyncLLMClient:
                 
                 continue  # Loop to get next response
             
-            # No tool calls - we have final response
+            # No tool calls - check if model is expressing intent without acting
             if content:
+                import re
+                intent_pattern = re.compile(
+                    r"(?:^|\.\s*)(let me|i'?ll|i will|i'?m going to|going to try|let me try)\b",
+                    re.IGNORECASE
+                )
+                if intent_pattern.search(content) and iteration < max_tool_iterations - 1:
+                    # Model said it'll do something but didn't call tools — nudge it
+                    logger.info(f"Intent without action detected, nudging: {content[:60]}...")
+                    self.context.add_message(Message(role="assistant", content=content))
+                    self.context.add_message(Message(
+                        role="user",
+                        content="[Go ahead — use your tools to do it]"
+                    ))
+                    continue
+                
                 self.context.add_message(Message(role="assistant", content=content))
                 return content
             
