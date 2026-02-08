@@ -157,6 +157,7 @@ async def run():
                 return
             
             # Send response
+            logger.info(f"Sending response ({len(response)} chars): {response[:80]}...")
             await telegram_bot.send_message(chat_id, response)
             
         except Exception as e:
