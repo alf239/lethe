@@ -97,6 +97,7 @@ CSS = """
     .mc-meta .accent { color: #00d4aa; }
     .mc-meta .blue { color: #3b82f6; }
     .mc-meta .amber { color: #f59e0b; }
+    .mc-meta .green { color: #22c55e; }
     
     /* Status */
     .mc-status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #94a3b8; font-family: monospace; }
@@ -148,6 +149,10 @@ CSS = """
     .mc-block-arrow { font-size: 10px; color: #475569; transition: transform 0.2s; width: 12px; }
     .mc-block-label { font-weight: 600; color: #e2e8f0; }
     .mc-block-meta { font-size: 9px; color: #475569; margin-left: auto; font-family: monospace; }
+    .mc-cache-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; margin-left: 6px; font-family: monospace; }
+    .mc-cache-badge.green { background: rgba(0, 212, 170, 0.15); color: #00d4aa; }
+    .mc-cache-badge.amber { background: rgba(255, 191, 0, 0.15); color: #ffbf00; }
+    .mc-cache-badge.dim { background: rgba(100, 116, 139, 0.1); color: #64748b; }
     .mc-block-body { padding: 4px 8px 8px 26px; display: none; }
     .mc-block-body.open { display: block; }
     .mc-block-body pre {
@@ -312,6 +317,15 @@ class ConsoleUI:
         parts.append(f'API CALLS <b>{state.api_calls_today}</b>')
         if state.last_context_tokens:
             parts.append(f'CTX <b class="amber">{state.last_context_tokens:,}</b> tok')
+        
+        # Cache stats
+        if state.last_prompt_tokens and state.last_cache_read:
+            pct = int(100 * state.last_cache_read / state.last_prompt_tokens) if state.last_prompt_tokens else 0
+            parts.append(f'CACHE <b class="green">{pct}%</b> ({state.last_cache_read:,} hit)')
+        elif state.last_cache_write:
+            parts.append(f'CACHE <b class="amber">{state.last_cache_write:,}</b> write')
+        if state.cache_read_tokens:
+            parts.append(f'CACHED TODAY <b class="green">{state.cache_read_tokens:,}</b> tok')
         return '<span class="mc-meta">' + ' <span class="mc-sep">│</span> '.join(parts) + '</span>'
     
     def _render_footer(self, state):
@@ -411,14 +425,29 @@ class ConsoleUI:
             <pre>{display}</pre>
         </div>'''
     
+    # Cache TTL indicators for each block type (Anthropic)
+    BLOCK_CACHE_INFO = {
+        "identity": ("1h", "green"),    # System prompt — 1h TTL
+        "tools": ("1h", "green"),       # Tool reference — 1h TTL
+        "summary": ("—", "dim"),        # Summary — NOT cached
+    }
+    # Default for memory blocks: 5m TTL
+    DEFAULT_CACHE_INFO = ("5m", "amber")
+
     def _render_block_html(self, label, value, description="", chars=0, limit=20000):
         self._block_counter += 1
         bid = f"block-{self._block_counter}"
         desc_html = f'<div class="mc-block-desc">{_esc(description)}</div>' if description else ''
+        
+        # Cache indicator
+        cache_ttl, cache_color = self.BLOCK_CACHE_INFO.get(label, self.DEFAULT_CACHE_INFO)
+        cache_badge = f'<span class="mc-cache-badge {cache_color}">⚡{cache_ttl}</span>' if cache_ttl != "—" else '<span class="mc-cache-badge dim">no cache</span>'
+        
         return f'''<div class="mc-block">
             <div class="mc-block-header" onclick="toggleBlock('{bid}')">
                 <span class="mc-block-arrow" id="arrow-{bid}">▸</span>
                 <span class="mc-block-label">{_esc(label)}</span>
+                {cache_badge}
                 <span class="mc-block-meta">{chars:,}/{limit:,}</span>
             </div>
             <div class="mc-block-body" id="{bid}">

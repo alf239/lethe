@@ -869,12 +869,19 @@ class AsyncLLMClient:
             self._on_context_build(context, tokens)
     
     def _track_usage(self, result: Dict):
-        """Track token usage from API response."""
-        if hasattr(self, "_on_token_usage") and self._on_token_usage:
-            usage = result.get("usage", {})
-            total = usage.get("total_tokens", 0)
-            if total:
-                self._on_token_usage(total)
+        """Track token usage and cache stats from API response."""
+        usage = result.get("usage", {})
+        total = usage.get("total_tokens", 0)
+        if total and hasattr(self, "_on_token_usage") and self._on_token_usage:
+            self._on_token_usage(total)
+        
+        # Track cache stats in console
+        if usage:
+            try:
+                from lethe.console import track_cache_usage
+                track_cache_usage(usage)
+            except ImportError:
+                pass
     
     def load_messages(self, messages: List[dict]):
         """Load existing messages from history into context.

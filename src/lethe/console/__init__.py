@@ -53,6 +53,13 @@ class ConsoleState:
     tokens_today: int = 0
     api_calls_today: int = 0
     
+    # Cache stats (from API response usage.prompt_tokens_details)
+    cache_read_tokens: int = 0       # Total cached tokens read today
+    cache_write_tokens: int = 0      # Total cached tokens written today
+    last_cache_read: int = 0         # Cached tokens read in last request
+    last_cache_write: int = 0        # Cached tokens written in last request
+    last_prompt_tokens: int = 0      # Total prompt tokens in last request
+    
     # Change tracking (incremented on data changes that need UI rebuild)
     version: int = 0
 
@@ -134,3 +141,36 @@ def track_tokens(tokens: int):
     """Track tokens consumed."""
     _state.tokens_today += tokens
     _state.api_calls_today += 1
+
+
+def track_cache_usage(usage: dict):
+    """Track cache usage from API response.
+    
+    Works with all providers via OpenRouter's unified format:
+    - Anthropic: cache_creation_input_tokens, cache_read_input_tokens
+    - OpenRouter unified: prompt_tokens_details.cached_tokens, cache_write_tokens
+    - Moonshot/Kimi: automatic caching, same unified format
+    """
+    # OpenRouter unified format
+    details = usage.get("prompt_tokens_details", {})
+    if details:
+        cached = details.get("cached_tokens", 0)
+        written = details.get("cache_write_tokens", 0)
+        if cached:
+            _state.last_cache_read = cached
+            _state.cache_read_tokens += cached
+        if written:
+            _state.last_cache_write = written
+            _state.cache_write_tokens += written
+    
+    # Anthropic direct format (via litellm)
+    cache_read = usage.get("cache_read_input_tokens", 0)
+    cache_write = usage.get("cache_creation_input_tokens", 0)
+    if cache_read:
+        _state.last_cache_read = cache_read
+        _state.cache_read_tokens += cache_read
+    if cache_write:
+        _state.last_cache_write = cache_write
+        _state.cache_write_tokens += cache_write
+    
+    _state.last_prompt_tokens = usage.get("prompt_tokens", 0)
