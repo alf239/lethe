@@ -14,7 +14,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from lethe.actor import ActorConfig, ActorRegistry, ActorState
-from lethe.actor.dmn import DefaultModeNetwork, DMN_STATE_FILE, DMN_SYSTEM_PROMPT
+from lethe.actor.dmn import DefaultModeNetwork, DMN_STATE_FILE, get_dmn_system_prompt
 
 
 @pytest.fixture
@@ -64,10 +64,13 @@ def make_mock_llm(registry):
 class TestDMNBasic:
     def test_dmn_system_prompt(self):
         """DMN has a specific system prompt for background thinking."""
-        assert "Default Mode Network" in DMN_SYSTEM_PROMPT
-        assert "background" in DMN_SYSTEM_PROMPT
-        assert "questions.md" in DMN_SYSTEM_PROMPT
-        assert "terminate" in DMN_SYSTEM_PROMPT
+        prompt = get_dmn_system_prompt()
+        assert "Default Mode Network" in prompt
+        assert "background" in prompt
+        assert "questions.md" in prompt
+        assert "terminate" in prompt
+        # Verify workspace paths are resolved (no {workspace} placeholders)
+        assert "{workspace}" not in prompt
 
     def test_dmn_init(self, registry, butler, available_tools):
         dmn = DefaultModeNetwork(

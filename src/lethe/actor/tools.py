@@ -136,17 +136,26 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
         Returns:
             Actor ID and confirmation, or existing actor info if duplicate
         """
-        from lethe.actor import ActorConfig
+        from lethe.actor import ActorConfig, ActorState
         
         target_group = group or actor.config.group
         
+        # Show ALL active children before spawning (awareness check)
+        children = registry.get_children(actor.id)
+        active_children = [c for c in children if c.state in (ActorState.RUNNING, ActorState.INITIALIZING, ActorState.WAITING)]
+        
         # Check for existing actor with same name
         existing = registry.find_by_name(name, target_group)
-        if existing:
+        if existing and existing.state in (ActorState.RUNNING, ActorState.INITIALIZING, ActorState.WAITING):
+            children_info = ""
+            if active_children:
+                lines = [f"  - {c.config.name} (id={c.id}, state={c.state.value})" for c in active_children]
+                children_info = f"\n\nAll active children:\n" + "\n".join(lines)
             return (
                 f"Actor '{name}' already exists (id={existing.id}, state={existing.state.value}).\n"
                 f"Goals: {existing.config.goals}\n"
                 f"Use send_message({existing.id}, ...) to communicate with it."
+                f"{children_info}"
             )
         
         tool_list = [t.strip() for t in tools.split(",") if t.strip()] if tools else []
@@ -163,11 +172,18 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
         child = registry.spawn(config, spawned_by=actor.id)
         
         model_info = f", model={model}" if model else ", model=aux (default)"
+        children_info = ""
+        active_children = [c for c in registry.get_children(actor.id) if c.state in (ActorState.RUNNING, ActorState.INITIALIZING, ActorState.WAITING)]
+        if len(active_children) > 1:  # More than just the new one
+            lines = [f"  - {c.config.name} (id={c.id}, state={c.state.value})" for c in active_children]
+            children_info = f"\n\nAll active children:\n" + "\n".join(lines)
+        
         return (
             f"Spawned actor '{name}' (id={child.id}, group={target_group}{model_info}).\n"
             f"Goals: {goals[:200]}\n"
             f"Tools: default (bash, file I/O, grep){' + ' + ', '.join(tool_list) if tool_list else ''} + actor tools\n"
             f"It will work autonomously and message you when done."
+            f"{children_info}"
         )
     
     tools.append((spawn_actor, False))
