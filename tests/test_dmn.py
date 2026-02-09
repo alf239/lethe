@@ -74,10 +74,10 @@ class TestDMNBasic:
             registry=registry,
             llm_factory=AsyncMock(),
             available_tools=available_tools,
-            butler_id=butler.id,
+            cortex_id=butler.id,
             send_to_user=AsyncMock(),
         )
-        assert dmn.butler_id == butler.id
+        assert dmn.cortex_id == butler.id
 
     @pytest.mark.asyncio
     async def test_dmn_round_creates_actor(self, registry, butler, available_tools):
@@ -88,7 +88,7 @@ class TestDMNBasic:
             registry=registry,
             llm_factory=AsyncMock(),
             available_tools=available_tools,
-            butler_id=butler.id,
+            cortex_id=butler.id,
             send_to_user=AsyncMock(),
         )
         dmn._create_dmn_llm = AsyncMock(return_value=mock_llm)
@@ -122,7 +122,7 @@ class TestDMNBasic:
             registry=registry,
             llm_factory=AsyncMock(),
             available_tools=available_tools,
-            butler_id=butler.id,
+            cortex_id=butler.id,
             send_to_user=AsyncMock(),
             get_reminders=get_reminders,
         )
@@ -147,7 +147,7 @@ class TestDMNBasic:
             registry=registry,
             llm_factory=AsyncMock(),
             available_tools=available_tools,
-            butler_id=butler.id,
+            cortex_id=butler.id,
             send_to_user=AsyncMock(),
         )
         dmn._create_dmn_llm = AsyncMock(return_value=mock_llm)
@@ -185,7 +185,7 @@ class TestDMNState:
             registry=registry,
             llm_factory=AsyncMock(),
             available_tools=available_tools,
-            butler_id=butler.id,
+            cortex_id=butler.id,
             send_to_user=AsyncMock(),
         )
         dmn._create_dmn_llm = AsyncMock(return_value=mock_llm)

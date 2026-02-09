@@ -1,12 +1,12 @@
 """Integration layer — connects actors to the existing Agent/LLM system.
 
-The butler (principal) is a pure coordinator — she NEVER calls tools herself.
+The cortex (principal) is a pure coordinator — it NEVER calls tools itself.
 All work is delegated to subagents who have the actual tools.
-Butler only has actor tools + memory tools + telegram tools.
+Cortex only has actor tools + memory tools + telegram tools.
 
 The DMN (Default Mode Network) is a persistent background subagent that
 replaces heartbeats. It scans goals, reorganizes memory, self-improves,
-and notifies the butler when something needs user attention.
+and notifies the cortex when something needs user attention.
 """
 
 import asyncio
@@ -21,16 +21,16 @@ from lethe.memory.llm import AsyncLLMClient, LLMConfig
 
 logger = logging.getLogger(__name__)
 
-# Tools the butler keeps (actor + memory + telegram)
+# Tools the cortex keeps (actor + memory + telegram)
 # Everything else (file, CLI, web, browser) goes to subagents
-BUTLER_TOOL_NAMES = {
+CORTEX_TOOL_NAMES = {
     # Actor tools (added by actor system)
     'send_message', 'wait_for_response', 'discover_actors',
     'terminate', 'spawn_subagent', 'kill_actor', 'ping_actor',
-    # Memory tools (butler manages her own memory)
+    # Memory tools (cortex manages its own memory)
     'memory_read', 'memory_update', 'memory_append',
     'archival_search', 'archival_insert', 'conversation_search',
-    # Telegram tools (butler talks to user)
+    # Telegram tools (cortex talks to user)
     'telegram_send_message', 'telegram_send_file',
 }
 
@@ -44,7 +44,7 @@ SUBAGENT_DEFAULT_TOOLS = {
 class ActorSystem:
     """Manages the actor system, wiring it into the existing Agent.
     
-    The butler (principal) only gets actor tools — no file, web, or CLI tools.
+    The cortex (principal) only gets actor tools — no file, web, or CLI tools.
     Those are collected and passed to subagents when they're spawned.
     """
 
@@ -55,7 +55,7 @@ class ActorSystem:
         self.dmn: Optional[DefaultModeNetwork] = None
         self._background_tasks: Dict[str, asyncio.Task] = {}
         
-        # Tools from the agent that subagents can use (not the butler)
+        # Tools from the agent that subagents can use (not the cortex)
         self._available_tools: Dict[str, tuple] = {}
         
         # Callbacks set by main.py
@@ -73,18 +73,18 @@ class ActorSystem:
         # Collect all agent tools BEFORE stripping them
         self._collect_available_tools()
         
-        # Strip tools butler doesn't need — she keeps memory + telegram
+        # Strip tools cortex doesn't need — keeps memory + telegram
         if hasattr(self.agent, 'llm') and hasattr(self.agent.llm, '_tools'):
-            to_strip = [name for name in self.agent.llm._tools if name not in BUTLER_TOOL_NAMES]
+            to_strip = [name for name in self.agent.llm._tools if name not in CORTEX_TOOL_NAMES]
             for name in to_strip:
                 del self.agent.llm._tools[name]
             if to_strip:
-                logger.info(f"Stripped {len(to_strip)} tools from butler: {to_strip}")
+                logger.info(f"Stripped {len(to_strip)} tools from cortex: {to_strip}")
         
         # Create principal actor
         self.principal = self.registry.spawn(
             ActorConfig(
-                name="butler",
+                name="cortex",
                 group="main",
                 goals="Serve the user. You are a coordinator — delegate ALL work to subagents.",
             ),
@@ -94,7 +94,7 @@ class ActorSystem:
         # Set up LLM factory
         self.registry.set_llm_factory(self._create_llm_for_actor)
         
-        # Register actor tools with the butler's LLM
+        # Register actor tools with the cortex's LLM
         actor_tools = create_actor_tools(self.principal, self.registry)
         for func, _ in actor_tools:
             self.agent.add_tool(func)
@@ -119,7 +119,7 @@ class ActorSystem:
             registry=self.registry,
             llm_factory=self._create_llm_for_actor,
             available_tools=self._available_tools,
-            butler_id=self.principal.id,
+            cortex_id=self.principal.id,
             send_to_user=self._send_to_user or (lambda msg: asyncio.sleep(0)),
             get_reminders=self._get_reminders,
         )
@@ -128,18 +128,24 @@ class ActorSystem:
         available_count = len(self._available_tools)
         logger.info(
             f"Actor system initialized. Principal: {self.principal.id}, "
-            f"butler tools: {tool_count}, subagent tools available: {available_count}, DMN ready"
+            f"cortex tools: {tool_count}, subagent tools available: {available_count}, DMN ready"
         )
 
+    # Tools subagents must NOT have — they communicate via actors only
+    SUBAGENT_EXCLUDED_TOOLS = {
+        'telegram_send_message', 'telegram_send_file', 'telegram_react',
+    }
+
     def _collect_available_tools(self):
-        """Collect ALL tools from the agent for subagent use.
+        """Collect tools from the agent for subagent use.
         
-        This runs BEFORE stripping butler tools, so it captures everything.
-        Subagents can request any tool, including memory tools.
+        This runs BEFORE stripping cortex tools, so it captures everything.
+        Subagents can request any tool EXCEPT telegram (they message actors, not users).
         """
         if hasattr(self.agent, 'llm') and hasattr(self.agent.llm, '_tools'):
             for name, (func, schema) in self.agent.llm._tools.items():
-                self._available_tools[name] = (func, schema)
+                if name not in self.SUBAGENT_EXCLUDED_TOOLS:
+                    self._available_tools[name] = (func, schema)
 
     def get_available_tool_names(self) -> List[str]:
         """List tool names available for subagents."""

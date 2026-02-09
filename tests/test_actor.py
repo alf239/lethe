@@ -460,7 +460,7 @@ class TestActorTools:
 class TestSystemPrompt:
     def test_principal_prompt(self, principal, worker):
         prompt = principal.build_system_prompt()
-        assert "principal actor" in prompt
+        assert "cortex" in prompt
         assert "ONLY actor" in prompt
         assert "COORDINATOR" in prompt
         assert "NEVER" in prompt  # Never do work yourself

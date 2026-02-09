@@ -70,7 +70,7 @@ async def run():
         from lethe.actor.integration import ActorSystem
         actor_system = ActorSystem(agent)
         await actor_system.setup()
-        console.print("[cyan]Actor system[/cyan] initialized (principal: butler)")
+        console.print("[cyan]Actor system[/cyan] initialized (cortex + DMN)")
     
     stats = agent.get_stats()
     console.print(f"[green]Agent ready[/green] - {stats['memory_blocks']} blocks, {stats['archival_memories']} memories")

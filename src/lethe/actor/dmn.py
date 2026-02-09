@@ -6,7 +6,7 @@ heartbeat-to-butler pipeline with a dedicated thinking agent that:
 - Scans goals, todos, reminders
 - Reorganizes memory, writes reflections
 - Self-improves (updates questions.md, project notes)
-- Notifies butler when something needs user attention
+- Notifies cortex when something needs user attention
 - Works in rounds: reads previous round's state, thinks, acts, saves state
 
 Uses the MAIN model (not aux) — it needs full reasoning capability.
@@ -41,7 +41,7 @@ You are the subconscious mind of the AI assistant. Your job is to:
 3. **Self-improve** — update ~/lethe/questions.md with reflections, identify patterns
 4. **Monitor projects** — scan ~/lethe/projects/ for stalled work or opportunities
 5. **Advance user's goals** — proactively work on things that help your principal
-6. **Notify butler** — send messages when something needs user attention (reminders, deadlines, insights)
+6. **Notify cortex** — send messages when something needs user attention (reminders, deadlines, insights)
 </purpose>
 
 <workflow>
@@ -50,15 +50,15 @@ Each round:
 2. Check todos and reminders for anything due or overdue
 3. Read and update ~/lethe/questions.md with new reflections
 4. Take action: update files, create reminders, reorganize notes
-5. If anything needs user attention, send_message to butler
+5. If anything needs user attention, send_message to cortex
 6. Write your updated state to ~/lethe/dmn_state.md for next round
 7. Call terminate(result) with a brief summary of what you did
 </workflow>
 
 <rules>
 - You are NOT the user-facing assistant. You work in the background.
-- Send messages to the butler ONLY for genuinely urgent/actionable items
-- Don't spam the butler — if it can wait, note it for next round
+- Send messages to the cortex ONLY for genuinely urgent/actionable items
+- Don't spam the cortex — if it can wait, note it for next round
 - Focus on being useful, not just reflective
 - Update your state file at the end of each round
 - Keep your state file concise (under 50 lines) — it's loaded each round
@@ -80,7 +80,7 @@ class DefaultModeNetwork:
     - Is spawned once at startup and re-spawned each heartbeat round
     - Uses the main model (not aux) for full reasoning
     - Has memory tools, file tools, todo tools
-    - Can send messages to the butler for user notifications
+    - Can send messages to the cortex for user notifications
     - Persists state between rounds via a file
     """
 
@@ -89,14 +89,14 @@ class DefaultModeNetwork:
         registry: ActorRegistry,
         llm_factory: Callable,
         available_tools: dict,
-        butler_id: str,
+        cortex_id: str,
         send_to_user: Callable[[str], Awaitable[None]],
         get_reminders: Optional[Callable[[], Awaitable[str]]] = None,
     ):
         self.registry = registry
         self.llm_factory = llm_factory
         self.available_tools = available_tools
-        self.butler_id = butler_id
+        self.cortex_id = cortex_id
         self.send_to_user = send_to_user
         self.get_reminders = get_reminders
         self._current_actor: Optional[Actor] = None
@@ -142,7 +142,7 @@ class DefaultModeNetwork:
             max_turns=10,
         )
         
-        actor = self.registry.spawn(config, spawned_by=self.butler_id)
+        actor = self.registry.spawn(config, spawned_by=self.cortex_id)
         self._current_actor = actor
         
         # Create LLM client with MAIN model and DMN system prompt
@@ -203,7 +203,7 @@ class DefaultModeNetwork:
                 
                 # Check if DMN sent a message to butler
                 for m in actor._messages:
-                    if m.sender == actor.id and m.recipient == self.butler_id:
+                    if m.sender == actor.id and m.recipient == self.cortex_id:
                         if "[URGENT]" in m.content or "remind" in m.content.lower():
                             user_message = m.content
             

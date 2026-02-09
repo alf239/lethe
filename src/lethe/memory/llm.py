@@ -689,9 +689,27 @@ class ContextWindow:
             else:
                 merged.append(m)
         
+        # Anthropic message caching: mark a message near the end with cache_control
+        # Messages don't change individually, so everything before the breakpoint is cached
+        # We cache the third-from-last message — new messages after it are uncached
+        if is_anthropic and len(merged) > 3:
+            cache_idx = len(merged) - 3  # 3rd from end
+            cache_msg = merged[cache_idx]
+            content = cache_msg.get("content", "")
+            if isinstance(content, str) and content:
+                cache_msg["content"] = [{
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"}
+                }]
+            elif isinstance(content, list):
+                # Already structured — add cache_control to last block
+                if content:
+                    content[-1]["cache_control"] = {"type": "ephemeral"}
+        
         # Sanitize tool IDs for Anthropic (must match ^[a-zA-Z0-9-]+$)
         # Kimi needs exact format: functions.func_name:idx — DO NOT sanitize
-        if "claude" in self.config.model.lower() or "anthropic" in self.config.model.lower():
+        if is_anthropic:
             import re
             for m in merged:
                 if m.get("tool_call_id"):
