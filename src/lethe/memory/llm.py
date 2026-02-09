@@ -537,41 +537,51 @@ class ContextWindow:
         self._clean_orphaned_tool_messages()
         
         # Build system prompt
-        # Static content: system prompt + memory blocks
-        # Dynamic content: summary
-        
-        static_parts = [self.system_prompt]
-        if self.memory_context:
-            static_parts.append(self.memory_context)
-        static_text = "\n".join(static_parts)
-        
-        # For non-Anthropic models: embed tool reference directly in system prompt
-        # (Kimi K2.5 works much better with tools visible in context text)
-        if self._tool_reference:
-            static_text += "\n\n" + self._tool_reference
+        # Anthropic: 3 content blocks for optimal caching
+        #   1. System prompt (+ tool ref for non-Anthropic) — rarely changes → cached
+        #   2. Memory blocks — changes on memory_update → cached separately
+        #   3. Summary — changes on compaction → not cached
+        # Cache order: tools → system blocks (prefix-matched)
+        # Each cache_control creates a breakpoint: content before it is cached independently
         
         is_anthropic = "claude" in self.config.model.lower() or "anthropic" in self.config.model.lower()
         
         if is_anthropic:
-            # Anthropic prompt caching: array of content blocks with cache_control
-            # Static block cached for 5min (refreshed on each hit), saves ~90% on input
-            system_content = [{
+            system_content = []
+            
+            # Block 1: System prompt (truly static — only changes on restart)
+            system_content.append({
                 "type": "text",
-                "text": static_text,
+                "text": self.system_prompt,
                 "cache_control": {"type": "ephemeral"}
-            }]
+            })
+            
+            # Block 2: Memory blocks (changes when agent edits memory)
+            if self.memory_context:
+                system_content.append({
+                    "type": "text",
+                    "text": self.memory_context,
+                    "cache_control": {"type": "ephemeral"}
+                })
+            
+            # Block 3: Summary (changes on compaction — NOT cached)
             if self.summary:
                 system_content.append({
                     "type": "text",
                     "text": f"\n<conversation_summary>\n{self.summary}\n</conversation_summary>"
                 })
+            
             messages = [{"role": "system", "content": system_content}]
         else:
-            # Other models: plain string system prompt
-            system_text = static_text
+            # Non-Anthropic: plain string, tool reference embedded in text
+            parts = [self.system_prompt]
+            if self.memory_context:
+                parts.append(self.memory_context)
+            if self._tool_reference:
+                parts.append(self._tool_reference)
             if self.summary:
-                system_text += f"\n\n<conversation_summary>\n{self.summary}\n</conversation_summary>"
-            messages = [{"role": "system", "content": system_text}]
+                parts.append(f"<conversation_summary>\n{self.summary}\n</conversation_summary>")
+            messages = [{"role": "system", "content": "\n\n".join(parts)}]
         
         # Find indices of image messages (to keep only most recent)
         image_indices = []
