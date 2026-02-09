@@ -236,6 +236,7 @@ class ContextWindow:
     total_messages_db: int = 0  # Total messages in database (set by caller)
     _summarizer: Optional[Callable] = None  # Set by LLMClient
     _tool_reference: str = ""  # Compact tool list for system prompt (non-Anthropic models)
+    _tool_schemas_text: str = ""  # Serialized tool schemas for token budget accounting
     
     def count_tokens(self, text: str) -> int:
         """Approximate token count with safety margin.
@@ -247,11 +248,13 @@ class ContextWindow:
         return int(base_count * TOKEN_SAFETY_MARGIN)
     
     def get_fixed_tokens(self) -> int:
-        """Get tokens used by fixed content."""
+        """Get tokens used by fixed content (including tool schemas)."""
         return (
             self.count_tokens(self.system_prompt) +
             self.count_tokens(self.memory_context) +
-            self.count_tokens(self.summary)
+            self.count_tokens(self.summary) +
+            self.count_tokens(self._tool_reference) +
+            self.count_tokens(self._tool_schemas_text)
         )
     
     def get_available_tokens(self) -> int:
@@ -486,8 +489,27 @@ class ContextWindow:
                         logger.warning(f"Removing assistant tool_calls with no results: {expected_ids}")
                     expected_tool_ids = set()
                 else:
-                    clean_messages.append(msg)
-                    expected_tool_ids = expected_ids
+                    if result_ids != expected_ids:
+                        # Partial results — filter tool_calls to matched ones only
+                        filtered_calls = [tc for tc in msg.tool_calls if tc["id"] in result_ids]
+                        if filtered_calls:
+                            clean_messages.append(Message(
+                                role="assistant",
+                                content=msg.content,
+                                created_at=msg.created_at,
+                                tool_calls=filtered_calls,
+                            ))
+                        elif msg.content:
+                            clean_messages.append(Message(
+                                role="assistant", content=msg.content,
+                                created_at=msg.created_at,
+                            ))
+                        else:
+                            logger.warning(f"Removing assistant with partial tool results: {expected_ids - result_ids}")
+                        expected_tool_ids = result_ids
+                    else:
+                        clean_messages.append(msg)
+                        expected_tool_ids = expected_ids
             elif msg.role == "tool" and msg.tool_call_id:
                 if msg.tool_call_id in expected_tool_ids:
                     clean_messages.append(msg)
@@ -733,6 +755,7 @@ class AsyncLLMClient:
             schema = function_to_schema(func)
         
         self._tools[func.__name__] = (func, schema)
+        self._update_tool_budget()
     
     def add_tools(self, tools: List[tuple[Callable, Dict]]):
         """Add multiple tools as (function, schema) tuples."""
@@ -740,6 +763,14 @@ class AsyncLLMClient:
             # Use schema name as key (allows name overrides for async imports)
             name = schema.get("name", func.__name__)
             self._tools[name] = (func, schema)
+        self._update_tool_budget()
+    
+    def _update_tool_budget(self):
+        """Update context window's tool schema budget for accurate token counting."""
+        if self.tools:
+            self.context._tool_schemas_text = json.dumps(self.tools, separators=(',', ':'))
+        else:
+            self.context._tool_schemas_text = ""
     
     @property
     def tools(self) -> List[Dict]:
