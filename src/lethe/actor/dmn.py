@@ -133,7 +133,7 @@ class DefaultModeNetwork:
         # Create the DMN actor for this round
         config = ActorConfig(
             name="dmn",
-            group="system",
+            group="main",
             goals="Background thinking round. Scan goals, reflect, take action, update state.",
             model="",  # Will be set to main model by factory
             tools=["read_file", "write_file", "edit_file", "list_directory", "grep_search",
