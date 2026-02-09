@@ -64,6 +64,14 @@ async def run():
     await agent.initialize()  # Async init: load history with summarization
     agent.refresh_memory_context()
     
+    # Initialize actor system (subagent support)
+    actor_system = None
+    if os.environ.get("ACTORS_ENABLED", "true").lower() == "true":
+        from lethe.actor.integration import ActorSystem
+        actor_system = ActorSystem(agent)
+        await actor_system.setup()
+        console.print("[cyan]Actor system[/cyan] initialized (principal: butler)")
+    
     stats = agent.get_stats()
     console.print(f"[green]Agent ready[/green] - {stats['memory_blocks']} blocks, {stats['archival_memories']} memories")
 
@@ -267,6 +275,8 @@ async def run():
         # Shutdown with timeout to avoid hanging on native threads
         try:
             async with asyncio.timeout(5):
+                if actor_system:
+                    await actor_system.shutdown()
                 await heartbeat.stop()
                 await telegram_bot.stop()
                 await agent.close()
