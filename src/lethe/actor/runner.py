@@ -155,7 +155,19 @@ class ActorRunner:
                         parts.append(f"[Message from {sender_name}]: {msg.content}")
                     message = "\n".join(parts)
                 else:
-                    message = "[Continue working on your goals. Call terminate(result) when done.]"
+                    # No incoming messages — check if subagent should wrap up
+                    if turn >= actor.config.max_turns * 0.7:
+                        message = (
+                            f"[Turn {turn + 1}/{actor.config.max_turns} — you're running low on turns. "
+                            f"Call terminate(result) with your findings NOW.]"
+                        )
+                    elif turn > 0 and turn % 5 == 0:
+                        message = (
+                            f"[Turn {turn + 1}/{actor.config.max_turns}. "
+                            f"If you have results, call terminate(result). Otherwise continue.]"
+                        )
+                    else:
+                        message = "[Continue working on your goals. Call terminate(result) when done.]"
                 
                 # Check if we should notify parent about long-running task
                 elapsed = time.monotonic() - start_time

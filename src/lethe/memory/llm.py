@@ -931,7 +931,8 @@ class AsyncLLMClient:
         """
         import asyncio
         
-        MAX_CONTINUATION_DEPTH = 3  # Max auto-continues (total iterations = 3 * 10 = 30)
+        MAX_CONTINUATION_DEPTH = 2  # Max auto-continues (total iterations = 2 * 10 = 20)
+        total_tool_calls = 0  # Track across entire chat() including continuations
         
         # Add user message
         self.context.add_message(Message(role="user", content=message))
@@ -954,6 +955,7 @@ class AsyncLLMClient:
             if tool_calls:
                 import uuid
                 empty_count = 0  # Reset on actual tool use
+                total_tool_calls += len(tool_calls)
                 for tc in tool_calls:
                     # Generate ID if missing (some models omit it)
                     if not tc.get("id"):
@@ -1079,24 +1081,39 @@ class AsyncLLMClient:
                     return content
                 return "Done."
             
-            logger.info("Empty response, nudging model to act")
+            logger.info(f"Empty response (total tools: {total_tool_calls}), nudging model to respond")
             self.context.add_message(Message(
                 role="user",
-                content="[Continue — use your tools or respond to the user.]"
+                content="[You returned an empty response. Respond to the user with what you know so far.]"
             ))
             continue
         
-        # Max iterations reached - continue with another batch automatically
+        # Max iterations reached - continue with escalating pressure to finish
         if _continuation_depth < MAX_CONTINUATION_DEPTH:
-            logger.info(f"Max tool iterations reached, auto-continuing (depth {_continuation_depth + 1}/{MAX_CONTINUATION_DEPTH})")
+            next_depth = _continuation_depth + 1
+            logger.info(f"Max tool iterations reached ({total_tool_calls} total tool calls), auto-continuing (depth {next_depth}/{MAX_CONTINUATION_DEPTH})")
+            
+            if next_depth >= MAX_CONTINUATION_DEPTH:
+                # Last chance — MUST respond or delegate
+                nudge = (
+                    f"[WRAP UP: You've made {total_tool_calls} tool calls. "
+                    f"You MUST either respond to the user NOW with what you have, "
+                    f"or spawn_actor() to delegate remaining work. No more solo exploration.]"
+                )
+            else:
+                nudge = (
+                    f"[You've made {total_tool_calls} tool calls. "
+                    f"If more work is needed, consider spawning a subagent. "
+                    f"Otherwise, respond to the user with your findings.]"
+                )
             
             # Recurse with fresh iteration count
             return await self.chat(
-                message="[Continue with your task]",
+                message=nudge,
                 max_tool_iterations=max_tool_iterations,
                 on_message=on_message,
                 on_image=on_image,
-                _continuation_depth=_continuation_depth + 1,
+                _continuation_depth=next_depth,
             )
         
         # Hit continuation limit - request final response without tools

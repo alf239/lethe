@@ -115,67 +115,92 @@ class MemoryStore:
                     target_meta = blocks_workspace / meta_file.name
                     target_meta.write_text(meta_file.read_text())
     
+    # Blocks that rarely change — eligible for long-lived cache (1h)
+    STABLE_BLOCKS = {"human", "tools"}
+
+    def _format_block(self, block: dict) -> str:
+        """Format a single block for context."""
+        label = block["label"]
+        value = block["value"] or ""
+        description = block.get("description") or ""
+        limit = block.get("limit") or 20000
+        
+        lines = [
+            f"<{label}>",
+            "<description>",
+            description,
+            "</description>",
+            "<metadata>",
+            f"- chars={len(value)}/{limit}",
+            "</metadata>",
+            "<value>",
+            value,
+            "</value>",
+            f"</{label}>",
+        ]
+        return "\n".join(lines)
+
     def get_context_for_prompt(self, max_tokens: int = 8000) -> str:
-        """Get formatted memory context for LLM prompt.
+        """Get formatted memory context for LLM prompt (single string).
         
-        Matches Letta's context engineering format:
-        - Memory blocks with description, metadata, value
-        - Memory metadata with timestamps and counts
+        Used by non-Anthropic models (no cache splitting needed).
+        """
+        stable, volatile = self.get_context_split()
+        parts = [p for p in [stable, volatile] if p]
+        return "\n\n".join(parts)
+
+    def get_context_split(self) -> tuple:
+        """Get memory context split into (stable, volatile) for caching.
         
-        Args:
-            max_tokens: Approximate max tokens for context
-            
+        - stable: blocks that rarely change (human, tools) — 1h cache
+        - volatile: blocks that change often (project, tasks) + metadata — 5m cache
+        
         Returns:
-            Formatted string with all memory blocks
+            (stable_str, volatile_str) — either can be empty string
         """
         from datetime import datetime, timezone
         
-        sections = []
-        
-        # Build memory blocks section (Letta-style)
         blocks = self.blocks.list_blocks()
+        stable_parts = []
+        volatile_parts = []
+        
         if blocks:
-            block_lines = ["<memory_blocks>"]
-            block_lines.append("The following memory blocks are currently engaged in your core memory unit:\n")
+            stable_block_strs = []
+            volatile_block_strs = []
             
-            for i, block in enumerate(blocks):
+            for block in blocks:
                 if block.get("hidden"):
                     continue
-                
                 label = block["label"]
-                
-                # Skip identity block - it's used as system prompt, not in memory_blocks
                 if label == "identity":
                     continue
-                value = block["value"] or ""
-                description = block.get("description") or ""
-                limit = block.get("limit") or 20000
                 
-                block_lines.append(f"<{label}>")
-                block_lines.append("<description>")
-                block_lines.append(description)
-                block_lines.append("</description>")
-                block_lines.append("<metadata>")
-                block_lines.append(f"- chars={len(value)}/{limit}")
-                block_lines.append("</metadata>")
-                block_lines.append("<value>")
-                block_lines.append(value)
-                block_lines.append("</value>")
-                block_lines.append(f"</{label}>")
-                
-                if i < len(blocks) - 1:
-                    block_lines.append("")
+                formatted = self._format_block(block)
+                if label in self.STABLE_BLOCKS:
+                    stable_block_strs.append(formatted)
+                else:
+                    volatile_block_strs.append(formatted)
             
-            block_lines.append("\n</memory_blocks>")
-            sections.append("\n".join(block_lines))
+            if stable_block_strs:
+                stable_parts.append(
+                    "<memory_blocks_stable>\n" +
+                    "\n\n".join(stable_block_strs) +
+                    "\n</memory_blocks_stable>"
+                )
+            
+            if volatile_block_strs:
+                volatile_parts.append(
+                    "<memory_blocks>\n" +
+                    "\n\n".join(volatile_block_strs) +
+                    "\n</memory_blocks>"
+                )
         
-        # Build memory metadata section
+        # Memory metadata (volatile — counts change)
         now = datetime.now(timezone.utc)
         message_count = self.messages.count()
         archival_count = self.archival.count()
         
-        # Get last modified time from blocks
-        last_modified = now  # Default to now
+        last_modified = now
         for block in blocks:
             if block.get("updated_at"):
                 block_time = datetime.fromisoformat(block["updated_at"].replace("Z", "+00:00"))
@@ -188,14 +213,12 @@ class MemoryStore:
             f"- Memory blocks were last modified: {last_modified.strftime('%Y-%m-%d %I:%M:%S %p')} UTC{last_modified.strftime('%z')}",
             f"- {message_count} previous messages between you and the user are stored in recall memory (use tools to access them)",
         ]
-        
         if archival_count > 0:
             metadata_lines.append(f"- {archival_count} total memories you created are stored in archival memory (use tools to access them)")
-        
         metadata_lines.append("</memory_metadata>")
-        sections.append("\n".join(metadata_lines))
+        volatile_parts.append("\n".join(metadata_lines))
         
-        return "\n\n".join(sections)
+        return "\n\n".join(stable_parts), "\n\n".join(volatile_parts)
     
     def search(
         self,
