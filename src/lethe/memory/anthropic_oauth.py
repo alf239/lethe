@@ -473,6 +473,12 @@ class AnthropicOAuth:
         url = f"{MESSAGES_URL}?beta=true"
         client = await self._get_client()
         
+        # Guard: Anthropic requires at least one non-system message
+        if not api_messages:
+            logger.warning("OAuth: no messages after normalization (system-only), adding placeholder")
+            api_messages = [{"role": "user", "content": "[Continue]"}]
+            body["messages"] = api_messages
+        
         logger.info(f"OAuth API call: model={model}, messages={len(api_messages)}, tools={len(api_tools)}")
         
         response = await client.post(url, headers=headers, json=body)
