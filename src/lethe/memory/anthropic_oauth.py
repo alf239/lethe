@@ -193,6 +193,7 @@ class AnthropicOAuth:
             "content-type": "application/json",
             "accept": "application/json",
             "authorization": f"Bearer {self.access_token}",
+            "anthropic-version": "2023-06-01",
             "user-agent": "claude-cli/2.1.7 (external, cli)",
             "x-app": "cli",
             "anthropic-dangerous-direct-browser-access": "true",
