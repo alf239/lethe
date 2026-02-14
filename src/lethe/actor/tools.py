@@ -105,6 +105,9 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
             Confirmation
         """
         actor.terminate(result)
+        # Signal LLM client to stop — prevents wasted API call after terminate
+        if hasattr(actor, '_llm') and actor._llm:
+            actor._llm._stop_after_tool = True
         return "Terminated. Result sent to parent."
 
     # --- Tools available to ALL actors ---

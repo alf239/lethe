@@ -497,15 +497,23 @@ Summary:"""
         # Store user message in history (original, without recall)
         self.memory.messages.add("user", message)
         
-        # Augment message with hippocampus recall (unless disabled)
+        # Recall relevant memories (unless disabled)
+        recall_context = None
         if use_hippocampus:
             recent = self.memory.messages.get_recent(10)
-            augmented_message = await self.hippocampus.augment_message(message, recent)
-        else:
-            augmented_message = message
+            recall_context = await self.hippocampus.recall(message, recent)
+        
+        # Inject recall as an assistant message before the user message.
+        # The model sees it as "I recalled this" — background context, not the user's request.
+        if recall_context:
+            from lethe.memory.llm import Message
+            self.llm.context.add_message(Message(
+                role="assistant",
+                content=f"[Memory recall — potentially relevant context for the next message]\n{recall_context}",
+            ))
         
         # Get response from LLM (handles tool calls internally)
-        response = await self.llm.chat(augmented_message, on_message=on_message, on_image=on_image)
+        response = await self.llm.chat(message, on_message=on_message, on_image=on_image)
         
         # Store assistant response in history
         self.memory.messages.add("assistant", response)

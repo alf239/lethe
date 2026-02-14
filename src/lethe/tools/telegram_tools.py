@@ -60,11 +60,22 @@ async def telegram_send_message_async(
     elif parse_mode.lower() == "html":
         pm = "HTML"
     
-    result = await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        parse_mode=pm,
-    )
+    try:
+        result = await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=pm,
+        )
+    except Exception as e:
+        if pm and "parse entities" in str(e).lower():
+            # Fallback to plain text on markdown parse errors
+            result = await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=None,
+            )
+        else:
+            raise
     
     return json.dumps({
         "success": True,

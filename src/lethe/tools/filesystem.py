@@ -64,7 +64,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0) -> str:
         output_lines = result.content.split('\n')
         numbered_lines = []
         for i, line in enumerate(output_lines, start=start_idx + 1):
-            numbered_lines.append(f"{i:6d}\t{line}")
+            numbered_lines.append(f"{i:6d}\t{line.rstrip()}")
         
         output = '\n'.join(numbered_lines)
         

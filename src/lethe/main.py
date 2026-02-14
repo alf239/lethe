@@ -321,7 +321,17 @@ def main():
 
     parser = argparse.ArgumentParser(description="Lethe - Autonomous AI Assistant")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("oauth-login", help="Login with Anthropic OAuth (Claude Max/Pro)")
+    
     args = parser.parse_args()
+
+    # Handle subcommands
+    if args.command == "oauth-login":
+        from lethe.tools.oauth_login import run_oauth_login
+        run_oauth_login()
+        return
 
     setup_logging(verbose=args.verbose)
 

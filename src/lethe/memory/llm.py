@@ -16,6 +16,7 @@ import litellm
 from litellm import acompletion, completion
 
 from lethe.utils import strip_model_tags
+from lethe.memory.anthropic_oauth import AnthropicOAuth, is_oauth_available
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +151,13 @@ class LLMConfig:
             if prefix and not self.model_aux.startswith(prefix):
                 self.model_aux = prefix + self.model_aux
         
-        # Verify API key exists
+        # Verify API key exists (ANTHROPIC_AUTH_TOKEN is an alternative for Anthropic)
         env_key = provider_config.get("env_key")
         if env_key and not os.environ.get(env_key):
-            raise ValueError(f"{env_key} not set")
+            if self.provider == "anthropic" and os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+                pass  # Bearer auth via ANTHROPIC_AUTH_TOKEN
+            else:
+                raise ValueError(f"{env_key} not set")
         
         logger.info(f"LLM config: provider={self.provider}, model={self.model}, aux={self.model_aux}")
     
@@ -170,6 +174,11 @@ class LLMConfig:
             if env_key and os.environ.get(env_key):
                 logger.info(f"Auto-detected provider: {name}")
                 return name
+        
+        # ANTHROPIC_AUTH_TOKEN as fallback for Anthropic (Bearer auth)
+        if os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+            logger.info("Auto-detected provider: anthropic (via ANTHROPIC_AUTH_TOKEN)")
+            return "anthropic"
         
         # Default
         return DEFAULT_PROVIDER
@@ -673,6 +682,18 @@ class ContextWindow:
                     preview = "\n".join(lines[:5])
                     content = f"{header}\n{preview}\n[... {len(lines) - 5} more lines skipped]"
             
+            # Cap oversized messages (e.g. PDF content pasted by user)
+            MAX_MESSAGE_CHARS = 50000
+            content_str = content if isinstance(content, str) else str(content)
+            if len(content_str) > MAX_MESSAGE_CHARS:
+                original_len = len(content_str)
+                # Keep first and last portions for context
+                keep = MAX_MESSAGE_CHARS - 200  # room for notice
+                head = content_str[:keep // 2]
+                tail = content_str[-(keep // 2):]
+                content = f"{head}\n\n[... {original_len - keep:,} chars truncated ...]\n\n{tail}"
+                logger.warning(f"Truncated oversized message ({original_len:,} → {MAX_MESSAGE_CHARS:,} chars)")
+            
             if msg.role == "user" and not msg.tool_calls and isinstance(content, str):
                 timestamp = msg.format_timestamp()
                 if timestamp:
@@ -782,8 +803,23 @@ class AsyncLLMClient:
         # Persistence callback: (role, content, metadata) -> None
         self._on_message_persist = on_message_persist
         
+        # Stop flag: set by terminate() tool to prevent extra API calls
+        self._stop_after_tool = False
+        
         # Set up summarizer callback
         self.context._summarizer = self._summarize_messages_sync
+        
+        # Auth mode: OAuth (subscription) takes priority over API key
+        self._oauth: Optional[AnthropicOAuth] = None
+        if self.config.provider == "anthropic" and is_oauth_available():
+            self._oauth = AnthropicOAuth()
+            has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+            if has_api_key:
+                logger.info("Auth: OAuth token AND API key both present — using OAuth (subscription)")
+            else:
+                logger.info("Auth: using OAuth token (Claude Max/Pro subscription)")
+        elif self.config.provider == "anthropic":
+            logger.info("Auth: using Anthropic API key")
         
         logger.info(f"AsyncLLMClient initialized with model {self.config.model}")
     
@@ -1077,6 +1113,12 @@ class AsyncLLMClient:
                     ))
                     logger.info(f"Injected image into context: {image['path']}")
                 
+                # Check if a tool (e.g. terminate()) requested early stop
+                if self._stop_after_tool:
+                    logger.info("Early stop requested by tool — skipping further API calls")
+                    self._stop_after_tool = False
+                    return content or "Done."
+                
                 continue  # Loop to get next response
             
             # No tool calls - we have final response
@@ -1155,11 +1197,23 @@ class AsyncLLMClient:
         # Custom API base for local/compatible providers
         if self.config.api_base:
             kwargs["api_base"] = self.config.api_base
+        # Anthropic Bearer auth via ANTHROPIC_AUTH_TOKEN (instead of x-api-key)
+        auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        if auth_token and "anthropic" in self.config.provider:
+            kwargs["api_key"] = "placeholder"  # prevent litellm from erroring on missing key
+            kwargs["extra_headers"] = {
+                "Authorization": f"Bearer {auth_token}",
+                "x-api-key": "",  # suppress default header
+            }
         return kwargs
     
     async def _call_with_retry(self, kwargs: Dict, log_type: str, max_retries: int = 5) -> Dict:
         """Make API call with retry logic for transient errors."""
         import asyncio
+        
+        # OAuth path: route through direct Anthropic API
+        if self._oauth:
+            return await self._call_with_retry_oauth(kwargs, log_type, max_retries)
         
         last_error = None
         for attempt in range(max_retries):
@@ -1196,24 +1250,52 @@ class AsyncLLMClient:
         logger.error(f"API call failed after {max_retries} attempts: {last_error}")
         raise last_error
     
+    async def _call_with_retry_oauth(self, kwargs: Dict, log_type: str, max_retries: int = 5) -> Dict:
+        """Route any litellm-style kwargs through OAuth instead."""
+        import asyncio
+        
+        messages = kwargs.get("messages", [])
+        tools = kwargs.get("tools")
+        model = kwargs.get("model", self.config.model)
+        max_tokens = kwargs.get("max_tokens", self.config.max_output_tokens)
+        
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                result = await self._oauth.call_messages(
+                    messages=messages,
+                    tools=tools if tools else None,
+                    model=model,
+                    max_tokens=max_tokens,
+                )
+                _log_llm_interaction(kwargs, result, f"{log_type}_oauth")
+                return result
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                
+                is_rate_limit = any(x in error_str for x in ["rate_limit", "rate limit", "429", "too many requests"])
+                is_transient = any(x in error_str for x in ["timeout", "overloaded", "503", "502", "500"])
+                
+                if is_rate_limit:
+                    wait_time = min(60, 15 * (attempt + 1))
+                    logger.warning(f"OAuth rate limit (attempt {attempt + 1}/{max_retries}), waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                elif is_transient:
+                    wait_time = (attempt + 1) * 2
+                    logger.warning(f"OAuth transient error (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+        
+        logger.error(f"OAuth call failed after {max_retries} attempts: {last_error}")
+        raise last_error
+    
     async def _call_api(self) -> Dict:
-        """Make API call via litellm."""
+        """Make API call via litellm (or OAuth if enabled)."""
         # Pre-flight: force compaction if context is too large
         self.context._compress_if_needed()
         messages = self.context.build_messages()
-        
-        kwargs = await self._get_api_kwargs()
-        kwargs["messages"] = messages
-        
-        if self.tools:
-            tools = [t.copy() for t in self.tools]
-            # Anthropic prompt caching: mark last tool for 1-hour caching
-            # Cache order is tools → system → messages
-            # Tools never change during a session → 1h TTL (2x write, paid once)
-            is_anthropic = "claude" in self.config.model.lower() or "anthropic" in self.config.model.lower()
-            if is_anthropic and tools:
-                tools[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
-            kwargs["tools"] = tools
         
         # Notify console of context build
         token_count = self.context.count_tokens("".join(str(m) for m in messages))
@@ -1221,10 +1303,20 @@ class AsyncLLMClient:
         self._notify_status("thinking")
         
         logger.debug(f"API call: {len(messages)} messages, {len(self.tools)} tools")
+        
+        kwargs = await self._get_api_kwargs()
+        kwargs["messages"] = messages
+        
+        if self.tools:
+            tools = [t.copy() for t in self.tools]
+            # Anthropic prompt caching: mark last tool for 1-hour caching
+            is_anthropic = "claude" in self.config.model.lower() or "anthropic" in self.config.model.lower()
+            if is_anthropic and tools:
+                tools[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+            kwargs["tools"] = tools
 
         debug_ts = None
         if LLM_DEBUG:
-            # Dump full context only in debug mode.
             try:
                 debug_path = Path("logs/llm")
                 debug_path.mkdir(parents=True, exist_ok=True)
@@ -1253,10 +1345,10 @@ class AsyncLLMClient:
         """Make API call without tools (for final response after hitting limit)."""
         messages = self.context.build_messages()
         
+        logger.debug(f"API call (no tools): {len(messages)} messages")
+        
         kwargs = await self._get_api_kwargs()
         kwargs["messages"] = messages
-        
-        logger.debug(f"API call (no tools): {len(messages)} messages")
         
         result = await self._call_with_retry(kwargs, "chat_no_tools")
         self._track_usage(result)
@@ -1276,10 +1368,10 @@ class AsyncLLMClient:
         """
         kwargs = await self._get_api_kwargs()
         kwargs["messages"] = [{"role": "user", "content": prompt}]
-        kwargs["temperature"] = 0.3  # Lower temperature for factual tasks
+        kwargs["temperature"] = 0.3
         kwargs["max_tokens"] = 2000
         
-        # Use aux model if requested
+        # Use aux model if requested (for OAuth: same provider, just different model)
         if use_aux:
             kwargs["model"] = self.config.model_aux
         

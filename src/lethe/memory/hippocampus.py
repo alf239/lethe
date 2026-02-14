@@ -62,6 +62,19 @@ Examples:
 JSON only:"""
 
 # Summarization prompt - preserves reference data
+RELEVANCE_PROMPT = """You are filtering memory search results for relevance.
+
+USER MESSAGE: {message}
+
+The following memories were retrieved by search. For each one, decide if it's relevant to the user's current message. Return ONLY a JSON array of the indices (0-based) that are relevant.
+
+MEMORIES:
+{candidates}
+
+Return ONLY a JSON array of relevant indices, e.g. [0, 2, 4]
+If none are relevant, return []
+JSON only:"""
+
 SUMMARIZE_PROMPT = """Summarize these recalled memories concisely for context. 
 
 CRITICAL: Preserve ALL of the following exactly as-is (do not paraphrase or omit):
@@ -155,6 +168,12 @@ class Hippocampus:
         # Step 2: Search with LLM-generated query
         archival_results = self._search_archival(search_query)
         conversation_results = self._search_conversations(search_query, exclude_recent=5)
+        
+        # Step 2.5: Filter for relevance (batch LLM call)
+        if self.analyzer and (archival_results or conversation_results):
+            archival_results, conversation_results = await self._filter_relevant(
+                message, archival_results, conversation_results
+            )
         
         # Combine and format results
         memories = self._format_memories(archival_results, conversation_results, max_lines)
@@ -309,6 +328,102 @@ class Hippocampus:
             logger.warning(f"Conversation search failed: {e}")
             return []
     
+    async def _filter_relevant(
+        self,
+        message: str,
+        archival: list[dict],
+        conversations: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
+        """Use LLM to filter out irrelevant memories in one batch call.
+        
+        Returns:
+            Filtered (archival, conversations) tuple
+        """
+        # Build numbered candidate list for the LLM
+        candidates = []
+        sources = []  # Track which list each candidate came from
+        
+        for mem in archival:
+            text = mem.get("text", "")
+            created = mem.get("created_at", "")[:16].replace("T", " ")
+            # Show trimmed preview for LLM to judge
+            preview = self._trim_entry(text, max_lines=10)
+            candidates.append(f"[{len(candidates)}] [{created}] archival: {preview}")
+            sources.append(("archival", mem))
+        
+        for msg in conversations:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            created = msg.get("created_at", "")[:16].replace("T", " ")
+            preview = self._trim_entry(str(content), max_lines=10)
+            candidates.append(f"[{len(candidates)}] [{created}] {role}: {preview}")
+            sources.append(("conversation", msg))
+        
+        if not candidates:
+            return archival, conversations
+        
+        candidates_text = "\n\n".join(candidates)
+        prompt = RELEVANCE_PROMPT.format(message=message, candidates=candidates_text)
+        
+        try:
+            response = await self.analyzer(prompt)
+            if not response:
+                return archival, conversations
+            
+            # Parse JSON array from response
+            response = response.strip()
+            json_match = re.search(r'\[[\d\s,]*\]', response)
+            if json_match:
+                relevant_indices = set(json.loads(json_match.group()))
+            else:
+                logger.warning(f"Hippocampus: invalid relevance response: {response[:200]}")
+                return archival, conversations
+            
+            # Split back into archival and conversation lists
+            filtered_archival = []
+            filtered_conversations = []
+            for idx in relevant_indices:
+                if 0 <= idx < len(sources):
+                    source_type, item = sources[idx]
+                    if source_type == "archival":
+                        filtered_archival.append(item)
+                    else:
+                        filtered_conversations.append(item)
+            
+            dropped = len(sources) - len(relevant_indices)
+            if dropped > 0:
+                logger.info(f"Hippocampus: filtered {dropped}/{len(sources)} irrelevant memories")
+            
+            return filtered_archival, filtered_conversations
+            
+        except Exception as e:
+            logger.warning(f"Hippocampus relevance filter failed: {e}")
+            return archival, conversations
+    
+    @staticmethod
+    def _trim_entry(text: str, max_lines: int = 50) -> str:
+        """Trim a single memory entry by lines. 
+        
+        If over max_lines, keep first max_lines. If still over 10K chars
+        after line trimming, replace with a placeholder.
+        """
+        MAX_ENTRY_CHARS = 10000
+        
+        if not isinstance(text, str):
+            text = str(text)
+        
+        lines = text.split("\n")
+        if len(lines) > max_lines:
+            text = "\n".join(lines[:max_lines])
+        
+        # If still huge after line trim (long lines), replace entirely
+        if len(text) > MAX_ENTRY_CHARS:
+            # Extract a meaningful summary from first line
+            first_line = lines[0][:200] if lines else "unknown content"
+            return f"[large entry: {len(lines)} lines, {len(text):,} chars — {first_line}]"
+        
+        return text
+    
     def _format_memories(
         self,
         archival: list[dict],
@@ -329,11 +444,13 @@ class Hippocampus:
                 if total_lines >= max_lines:
                     break
                     
-                text = mem.get("text", "")
+                text = self._trim_entry(mem.get("text", ""))
                 created = mem.get("created_at", "")[:16].replace("T", " ")  # YYYY-MM-DD HH:MM
                 
-                archival_lines.append(f"- [{created}] {text}")
-                total_lines += 1
+                entry = f"- [{created}] {text}"
+                entry_lines = entry.count("\n") + 1
+                archival_lines.append(entry)
+                total_lines += entry_lines
             
             if archival_lines:
                 sections.append("**From long-term memory:**\n" + "\n".join(archival_lines))
@@ -346,11 +463,13 @@ class Hippocampus:
                     break
                     
                 role = msg.get("role", "?")
-                content = msg.get("content", "")
+                content = self._trim_entry(msg.get("content", ""))
                 created = msg.get("created_at", "")[:16].replace("T", " ")  # YYYY-MM-DD HH:MM
                 
-                conv_lines.append(f"- [{created}] {role}: {content}")
-                total_lines += 1
+                entry = f"- [{created}] {role}: {content}"
+                entry_lines = entry.count("\n") + 1
+                conv_lines.append(entry)
+                total_lines += entry_lines
             
             if conv_lines:
                 sections.append("**From past conversations:**\n" + "\n".join(conv_lines))

@@ -107,7 +107,7 @@ class TestDMNBasic:
         """DMN receives reminders in its round message."""
         received_message = None
         
-        async def capture_chat(message):
+        async def capture_chat(message, **kwargs):
             nonlocal received_message
             received_message = message
             for actor in registry._actors.values():
@@ -168,7 +168,7 @@ class TestDMNState:
         """DMN reads previous state from file."""
         received_message = None
         
-        async def capture_chat(message):
+        async def capture_chat(message, **kwargs):
             nonlocal received_message
             received_message = message
             for actor in registry._actors.values():
