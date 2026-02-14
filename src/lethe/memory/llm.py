@@ -296,8 +296,16 @@ class ContextWindow:
             content = msg.get("content", "")
             metadata = msg.get("metadata", {})
             
-            # Keep tool messages from history — orphan cleaner handles unpaired ones,
-            # tool result skimmer truncates old results to 5 lines
+            # Skip tool messages from history — they can't be properly paired
+            # and cause the orphan cleaner to strip their parent assistant messages
+            if role == "tool":
+                skipped_tool += 1
+                continue
+            
+            # Strip tool_calls from loaded assistant messages — their results
+            # aren't in history, so orphan cleanup would destroy these messages
+            if role == "assistant" and metadata.get("tool_calls"):
+                metadata = {k: v for k, v in metadata.items() if k != "tool_calls"}
             
             # Handle multimodal content - extract text, skip base64
             if isinstance(content, str) and content.startswith("["):
