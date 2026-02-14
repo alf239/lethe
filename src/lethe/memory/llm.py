@@ -682,6 +682,18 @@ class ContextWindow:
                     preview = "\n".join(lines[:5])
                     content = f"{header}\n{preview}\n[... {len(lines) - 5} more lines skipped]"
             
+            # Cap oversized messages (e.g. PDF content pasted by user)
+            MAX_MESSAGE_CHARS = 50000
+            content_str = content if isinstance(content, str) else str(content)
+            if len(content_str) > MAX_MESSAGE_CHARS:
+                original_len = len(content_str)
+                # Keep first and last portions for context
+                keep = MAX_MESSAGE_CHARS - 200  # room for notice
+                head = content_str[:keep // 2]
+                tail = content_str[-(keep // 2):]
+                content = f"{head}\n\n[... {original_len - keep:,} chars truncated ...]\n\n{tail}"
+                logger.warning(f"Truncated oversized message ({original_len:,} → {MAX_MESSAGE_CHARS:,} chars)")
+            
             if msg.role == "user" and not msg.tool_calls and isinstance(content, str):
                 timestamp = msg.format_timestamp()
                 if timestamp:

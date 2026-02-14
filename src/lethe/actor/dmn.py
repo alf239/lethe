@@ -163,6 +163,7 @@ class DefaultModeNetwork:
             goals="Background thinking round. Scan goals, reflect, take action, update state.",
             model="",  # Will be set to main model by factory
             tools=["read_file", "write_file", "edit_file", "list_directory",
+                   "grep_search", "bash", "web_search",
                    "memory_read", "memory_update", "memory_append",
                    "archival_search", "archival_insert", "conversation_search"],
             max_turns=5,
