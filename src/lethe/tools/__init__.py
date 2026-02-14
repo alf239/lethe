@@ -177,6 +177,7 @@ def get_all_tools() -> list[tuple[Callable, dict]]:
         (fetch_webpage, None),
         
         # Telegram
+        (telegram_react, "telegram_react"),
         (telegram_send_message, "telegram_send_message"),
         (telegram_send_file, "telegram_send_file"),
     ]
