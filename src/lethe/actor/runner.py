@@ -110,6 +110,12 @@ class ActorRunner:
             # Build initial prompt
             system_prompt = actor.build_system_prompt()
             llm.context.system_prompt = system_prompt
+            if actor._last_prompt_stats:
+                logger.info(
+                    f"Actor {actor.id} prompt budget: "
+                    f"visible {actor._last_prompt_stats['visible_included']}/{actor._last_prompt_stats['visible_total']}, "
+                    f"inbox {actor._last_prompt_stats['inbox_included']}/{actor._last_prompt_stats['inbox_total']}"
+                )
             
             workspace_ctx = WORKSPACE_CONTEXT.format(
                 workspace=WORKSPACE_DIR,
@@ -146,7 +152,16 @@ class ActorRunner:
                 
                 # Build the message for this turn
                 if turn == 0:
-                    message = initial_message
+                    if incoming:
+                        parts = []
+                        for msg in incoming:
+                            sender = self.registry.get(msg.sender)
+                            sender_name = sender.config.name if sender else msg.sender
+                            parts.append(f"[Message from {sender_name}]: {msg.content}")
+                        incoming_text = "\n".join(parts)
+                        message = f"{initial_message}\n\nYou have new messages:\n{incoming_text}"
+                    else:
+                        message = initial_message
                 elif incoming:
                     parts = []
                     for msg in incoming:
@@ -173,6 +188,11 @@ class ActorRunner:
                 elapsed = time.monotonic() - start_time
                 if elapsed - (last_notify_time - start_time) > PROGRESS_NOTIFY_INTERVAL:
                     last_notify_time = time.monotonic()
+                    actor.registry.emit_event(
+                        "actor_progress",
+                        actor,
+                        {"turn": turn + 1, "max_turns": actor.config.max_turns, "elapsed_seconds": int(elapsed)},
+                    )
                     await self._notify_parent(
                         f"[PROGRESS] {actor.config.name} still working (turn {turn + 1}/{actor.config.max_turns}, "
                         f"{int(elapsed)}s elapsed). Last: {response[:100] if response else 'starting...'}"
@@ -190,11 +210,9 @@ class ActorRunner:
                 if actor.state == ActorState.TERMINATED:
                     break
                 
-                # Brief pause to collect any incoming messages
-                try:
-                    await asyncio.wait_for(actor._inbox.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    pass
+                # Brief pause to allow inbox to accumulate without consuming messages.
+                # Messages are drained at the top of each turn.
+                await asyncio.sleep(1.0)
             
             # Force terminate if max turns reached
             if actor.state != ActorState.TERMINATED:

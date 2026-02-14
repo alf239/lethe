@@ -125,6 +125,7 @@ Each round:
 <rules>
 - You are NOT the user-facing assistant. You work in the background.
 - Send messages to the cortex ONLY for genuinely urgent/actionable items
+- If you need user delivery, send_message(cortex_id, "[USER_NOTIFY] <message>") explicitly
 - Don't spam the cortex — if it can wait, note it to ideas.md instead
 - Focus on being useful, not just reflective
 - Update your state file at the end of each round
@@ -178,13 +179,28 @@ class DefaultModeNetwork:
         self.get_reminders = get_reminders
         self._current_actor: Optional[Actor] = None
 
+    @staticmethod
+    def _extract_user_notification(messages: list[ActorMessage], cortex_id: str) -> Optional[str]:
+        """Extract latest explicit notification message intended for user delivery."""
+        candidates = []
+        for m in messages:
+            if m.recipient != cortex_id or m.sender == cortex_id:
+                continue
+            text = (m.content or "").strip()
+            if text.startswith("[USER_NOTIFY]"):
+                candidates.append(text[len("[USER_NOTIFY]"):].strip())
+            elif text.startswith("[URGENT]"):
+                candidates.append(text)
+        return candidates[-1] if candidates else None
+
     async def run_round(self) -> Optional[str]:
         """Execute one DMN round. Called by heartbeat timer.
         
         Returns:
             Message to send to user, or None if nothing urgent
         """
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        round_started_at = datetime.now(timezone.utc)
+        timestamp = round_started_at.strftime("%Y-%m-%d %H:%M UTC")
         
         # Get reminders
         reminders_text = ""
@@ -278,15 +294,21 @@ class DefaultModeNetwork:
                 except Exception as e:
                     logger.error(f"DMN LLM error: {e}")
                     break
-                
+
+                # Check if DMN sent an explicit user notification to cortex
+                event_notifies = self.registry.events.query(
+                    event_type="user_notify",
+                    actor_id=actor.id,
+                    since=round_started_at,
+                    limit=5,
+                )
+                if event_notifies:
+                    user_message = event_notifies[-1].payload.get("message", "") or user_message
+                else:
+                    user_message = self._extract_user_notification(actor._messages, self.cortex_id) or user_message
+
                 if actor.state == ActorState.TERMINATED:
                     break
-                
-                # Check if DMN sent a message to cortex
-                for m in actor._messages:
-                    if m.sender == actor.id and m.recipient == self.cortex_id:
-                        if "[URGENT]" in m.content or "remind" in m.content.lower():
-                            user_message = m.content
             
             # Force terminate if didn't self-terminate
             if actor.state != ActorState.TERMINATED:
@@ -303,6 +325,13 @@ class DefaultModeNetwork:
         # Clean up
         self._current_actor = None
         
+        # Deliver explicit DMN notification immediately if callback is available.
+        if user_message and self.send_to_user:
+            try:
+                await self.send_to_user(user_message)
+                return None
+            except Exception as e:
+                logger.warning(f"DMN: failed to send user notification: {e}")
         return user_message
 
     async def _create_dmn_llm(self, actor: Actor) -> AsyncLLMClient:

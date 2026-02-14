@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from lethe.actor import (
     Actor,
     ActorConfig,
+    TaskState,
     ActorInfo,
     ActorMessage,
     ActorRegistry,
@@ -101,6 +102,14 @@ class TestActorLifecycle:
         assert info.group == "main"
         assert info.spawned_by == principal.id
         assert info.state == ActorState.RUNNING
+        assert info.task_state == TaskState.RUNNING
+
+    def test_task_state_transitions(self, worker):
+        ok, msg = worker.set_task_state("blocked", note="waiting on input")
+        assert ok
+        assert worker.task_state == TaskState.BLOCKED
+        ok, msg = worker.set_task_state("planned")
+        assert not ok
 
 
 # ── Registry ──────────────────────────────────────────────────
@@ -111,6 +120,8 @@ class TestActorRegistry:
         principal = registry.spawn(principal_config, is_principal=True)
         assert registry.get_principal() is principal
         assert registry.active_count == 1
+        events = registry.events.query(event_type="actor_spawned")
+        assert events
 
     def test_spawn_multiple(self, registry, principal):
         w1 = registry.spawn(ActorConfig(name="w1", group="main", goals="task1"), spawned_by=principal.id)
@@ -134,6 +145,12 @@ class TestActorRegistry:
         terminated = [a for a in actors if a.state == ActorState.TERMINATED]
         assert len(terminated) == 1
         assert terminated[0].name == "researcher"
+
+    def test_discover_active_excludes_terminated(self, registry, principal, worker):
+        worker.terminate("done")
+        actors = registry.discover_active("main")
+        assert len(actors) == 1
+        assert actors[0].name == "cortex"
 
     def test_get_children(self, registry, principal):
         w1 = registry.spawn(ActorConfig(name="w1", group="main", goals="t1"), spawned_by=principal.id)
@@ -163,6 +180,15 @@ class TestActorRegistry:
         worker.terminate("done")
         registry.cleanup_terminated(force=True)
         assert len(registry._actors) == 1
+
+    def test_discover_recently_finished(self, registry, principal):
+        w1 = registry.spawn(ActorConfig(name="w1", group="main", goals="t1"), spawned_by=principal.id)
+        w2 = registry.spawn(ActorConfig(name="w2", group="main", goals="t2"), spawned_by=principal.id)
+        w1.terminate("done 1")
+        w2.terminate("done 2")
+        recent = registry.discover_recently_finished("main", limit=1)
+        assert len(recent) == 1
+        assert recent[0].config.name == "w2"
 
     def test_find_by_name(self, registry, principal, worker):
         found = registry.find_by_name("researcher")
@@ -310,6 +336,9 @@ class TestActorTools:
         assert "kill_actor" in tool_names
         assert "send_message" in tool_names
         assert "discover_actors" in tool_names
+        assert "discover_recently_finished" in tool_names
+        assert "update_task_state" in tool_names
+        assert "get_task_state" in tool_names
         assert "terminate" in tool_names
 
     def test_all_actors_can_spawn(self, worker, registry):
@@ -375,6 +404,22 @@ class TestActorTools:
         discover_fn = next(func for func, _ in tools if func.__name__ == "discover_actors")
         result = discover_fn()
         assert "[child]" in result
+
+    def test_discover_tool_default_excludes_terminated(self, principal, worker, registry):
+        worker.terminate("done")
+        tools = create_actor_tools(principal, registry)
+        discover_fn = next(func for func, _ in tools if func.__name__ == "discover_actors")
+        result = discover_fn()
+        assert "researcher" not in result
+        assert "active only" in result
+
+    def test_discover_tool_can_include_terminated(self, principal, worker, registry):
+        worker.terminate("done")
+        tools = create_actor_tools(principal, registry)
+        discover_fn = next(func for func, _ in tools if func.__name__ == "discover_actors")
+        result = discover_fn(include_terminated=True)
+        assert "researcher" in result
+        assert "terminated" in result
 
     def test_terminate_tool(self, worker, registry):
         tools = create_actor_tools(worker, registry)
@@ -470,6 +515,21 @@ class TestActorTools:
         assert "restart" in result.lower()
         assert worker.state == ActorState.TERMINATED
         assert "Restart requested" in worker._result
+
+    def test_update_task_state_tool(self, worker, registry):
+        tools = create_actor_tools(worker, registry)
+        update_fn = next(func for func, _ in tools if func.__name__ == "update_task_state")
+        get_fn = next(func for func, _ in tools if func.__name__ == "get_task_state")
+        assert "updated" in update_fn("blocked", "waiting").lower()
+        assert "blocked" in get_fn()
+
+    def test_discover_recently_finished_tool(self, principal, worker, registry):
+        worker.terminate("done quickly")
+        tools = create_actor_tools(principal, registry)
+        finished_fn = next(func for func, _ in tools if func.__name__ == "discover_recently_finished")
+        result = finished_fn()
+        assert "researcher" in result
+        assert "done quickly" in result
 
 
 # ── System Prompt Building ────────────────────────────────────
@@ -586,6 +646,64 @@ class TestActorRunner:
         
         assert worker.state == ActorState.TERMINATED
         assert "Max turns" in result
+
+    @pytest.mark.asyncio
+    async def test_runner_keeps_inbox_messages_between_turns(self, registry, principal):
+        worker = registry.spawn(
+            ActorConfig(name="inbox_worker", group="main", goals="Process inbox", max_turns=2),
+            spawned_by=principal.id,
+        )
+
+        received = []
+        mock_llm = MagicMock()
+        mock_llm.add_tool = MagicMock()
+        mock_llm.context = MagicMock()
+
+        async def fake_chat(message):
+            received.append(message)
+            if len(received) == 1:
+                # Message arrives while actor is running.
+                await principal.send_to(worker.id, "status update")
+            elif len(received) == 2:
+                worker.terminate("done")
+            return "ok"
+
+        mock_llm.chat = fake_chat
+
+        async def mock_factory(actor):
+            return mock_llm
+
+        runner = ActorRunner(worker, registry, mock_factory)
+        await runner.run()
+
+        assert any("status update" in m for m in received)
+
+    @pytest.mark.asyncio
+    async def test_runner_emits_progress_event(self, registry, principal):
+        worker = registry.spawn(
+            ActorConfig(name="progress_worker", group="main", goals="Long task", max_turns=3),
+            spawned_by=principal.id,
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.add_tool = MagicMock()
+        mock_llm.context = MagicMock()
+
+        async def fake_chat(message):
+            await asyncio.sleep(0.05)
+            return "still working"
+
+        mock_llm.chat = fake_chat
+
+        async def mock_factory(actor):
+            return mock_llm
+
+        with patch("lethe.actor.runner.PROGRESS_NOTIFY_INTERVAL", 0):
+            runner = ActorRunner(worker, registry, mock_factory)
+            await runner.run()
+
+        events = registry.events.query(event_type="actor_progress", actor_id=worker.id)
+        assert events
 
 
 # ── Multi-Group Isolation ─────────────────────────────────────

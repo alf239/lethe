@@ -920,7 +920,7 @@ class AsyncLLMClient:
         # Use litellm for summarization
         try:
             response = completion(
-                model=self.config.model,
+                model=self.config.model_aux,
                 messages=[
                     {"role": "system", "content": SUMMARIZE_PROMPT},
                     {"role": "user", "content": conversation},
@@ -996,7 +996,6 @@ class AsyncLLMClient:
         max_tool_iterations: int = 10,
         on_message: Optional[Callable] = None,
         on_image: Optional[Callable] = None,  # Callback for image attachments
-        _continuation_depth: int = 0,  # Internal: track auto-continue depth
     ) -> str:
         """Send a message and get response, handling tool calls.
         
@@ -1010,181 +1009,243 @@ class AsyncLLMClient:
         """
         import asyncio
         
-        MAX_CONTINUATION_DEPTH = 2  # Max auto-continues (total iterations = 2 * 10 = 20)
+        MAX_CONTINUATION_DEPTH = 2  # Max auto-continues (total iterations = up to 3 * max_tool_iterations)
+        MAX_TOOL_ERRORS = 8
+        MAX_REPEATED_TOOL_CALLS = 4
+        MAX_NO_PROGRESS_TURNS = 4
         total_tool_calls = 0  # Track across entire chat() including continuations
+        continuation_depth = 0
+        total_tool_errors = 0
+        repeated_tool_call_streak = 0
+        no_progress_turns = 0
+        last_tool_signature = ""
+        circuit_breaker_reason = ""
         
         # Add user message
         self.context.add_message(Message(role="user", content=message))
         
-        empty_count = 0  # Track consecutive empty responses
-        for iteration in range(max_tool_iterations):
-            # Make API call
-            response = await self._call_api()
-            
-            # Check for tool calls
-            choice = response["choices"][0]
-            assistant_msg = choice["message"]
-            
-            # Get content (might be present even with tool calls)
-            content = strip_model_tags(assistant_msg.get("content") or "")
-            
-            # Handle tool calls
-            tool_calls = assistant_msg.get("tool_calls")
-            
-            if tool_calls:
-                import uuid
-                empty_count = 0  # Reset on actual tool use
-                total_tool_calls += len(tool_calls)
-                for tc in tool_calls:
-                    # Generate ID if missing (some models omit it)
-                    if not tc.get("id"):
-                        tc["id"] = f"call-{uuid.uuid4().hex[:12]}"
-            
-            # Callback with intermediate message (only when there are tool calls - i.e. more work to do)
-            # Don't callback with final response - that's returned and handled by caller
-            if content and on_message and tool_calls:
-                await on_message(strip_model_tags(content))
-            if tool_calls:
-                # Add assistant message with tool calls (and persist)
-                self._add_and_persist(Message(
-                    role="assistant",
-                    content=content,
-                    tool_calls=tool_calls,
-                ))
+        while True:
+            empty_count = 0  # Track consecutive empty responses per continuation batch
+            for _ in range(max_tool_iterations):
+                # Make API call
+                response = await self._call_api()
                 
-                # Execute tools and add results
-                # Collect images to inject AFTER all tool results (to not break tool pairing)
-                images_to_inject = []
+                # Check for tool calls
+                choice = response["choices"][0]
+                assistant_msg = choice["message"]
                 
-                for tool_call in tool_calls:
-                    tool_name = tool_call["function"]["name"].strip()  # Strip whitespace (model quirk)
-                    tool_id = tool_call["id"]
+                # Get content (might be present even with tool calls)
+                content = strip_model_tags(assistant_msg.get("content") or "")
+                
+                # Handle tool calls
+                tool_calls = assistant_msg.get("tool_calls")
+                
+                if tool_calls:
+                    import uuid
+                    empty_count = 0  # Reset on actual tool use
+                    total_tool_calls += len(tool_calls)
+                    for tc in tool_calls:
+                        # Generate ID if missing (some models omit it)
+                        if not tc.get("id"):
+                            tc["id"] = f"call-{uuid.uuid4().hex[:12]}"
+                
+                # Callback with intermediate message (only when there are tool calls - i.e. more work to do)
+                # Don't callback with final response - that's returned and handled by caller
+                if content and on_message and tool_calls:
+                    await on_message(strip_model_tags(content))
+                if tool_calls:
+                    # Add assistant message with tool calls (and persist)
+                    self._add_and_persist(Message(
+                        role="assistant",
+                        content=content,
+                        tool_calls=tool_calls,
+                    ))
                     
-                    # Parse tool arguments (may be malformed JSON from some models)
-                    try:
-                        tool_args = json.loads(tool_call["function"]["arguments"])
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Tool {tool_name} has malformed JSON args: {e}")
-                        # Add error result and continue (and persist)
+                    # Execute tools and add results
+                    # Collect images to inject AFTER all tool results (to not break tool pairing)
+                    images_to_inject = []
+                    turn_had_successful_tool = False
+                    
+                    for tool_call in tool_calls:
+                        tool_name = tool_call["function"]["name"].strip()  # Strip whitespace (model quirk)
+                        tool_id = tool_call["id"]
+                        
+                        # Parse tool arguments (may be malformed JSON from some models)
+                        try:
+                            tool_args = json.loads(tool_call["function"]["arguments"])
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Tool {tool_name} has malformed JSON args: {e}")
+                            total_tool_errors += 1
+                            # Add error result and continue (and persist)
+                            self._add_and_persist(Message(
+                                role="tool",
+                                content=f"Error: malformed tool arguments - {e}",
+                                tool_call_id=tool_id,
+                                name=tool_name,
+                            ))
+                            continue
+
+                        signature = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, ensure_ascii=True)}"
+                        if signature == last_tool_signature:
+                            repeated_tool_call_streak += 1
+                        else:
+                            repeated_tool_call_streak = 1
+                            last_tool_signature = signature
+                        
+                        logger.info(f"Executing tool: {tool_name}({list(tool_args.keys())})")
+                        self._notify_status("tool_call", tool_name)
+                        
+                        # Execute tool (handle both sync and async)
+                        # Sync tools run in thread executor to avoid blocking the event loop
+                        handler = self.get_tool(tool_name)
+                        if handler:
+                            try:
+                                if asyncio.iscoroutinefunction(handler):
+                                    result = await handler(**tool_args)
+                                else:
+                                    loop = asyncio.get_event_loop()
+                                    result = await loop.run_in_executor(
+                                        None, lambda: handler(**tool_args)
+                                    )
+                            except Exception as e:
+                                result = f"Error: {e}"
+                                logger.error(f"Tool {tool_name} failed: {e}")
+                        else:
+                            result = f"Unknown tool: {tool_name}"
+                        
+                        logger.info(f"  Result: {str(result)[:100]}...")
+                        if isinstance(result, str) and result.startswith("Error:"):
+                            total_tool_errors += 1
+                        elif isinstance(result, str) and result.startswith("Unknown tool:"):
+                            total_tool_errors += 1
+                        else:
+                            turn_had_successful_tool = True
+                        
+                        # Check for image attachment in result (send to user)
+                        if isinstance(result, dict) and "_image_attachment" in result:
+                            img = result["_image_attachment"]
+                            if on_image and img.get("path"):
+                                await on_image(img["path"])
+                            # Remove attachment from result for context
+                            result_for_context = {k: v for k, v in result.items() if k != "_image_attachment"}
+                            result = result_for_context
+                        
+                        # Check for image view in result (collect for injection after all tool results)
+                        if isinstance(result, dict) and "_image_view" in result:
+                            img = result["_image_view"]
+                            if img.get("data") and img.get("mime_type"):
+                                images_to_inject.append({
+                                    "mime_type": img["mime_type"],
+                                    "data": img["data"],
+                                    "path": img.get("path", "image")
+                                })
+                            # Remove from result for context
+                            result_for_context = {k: v for k, v in result.items() if k != "_image_view"}
+                            result = result_for_context
+                        
+                        # Add tool result (and persist)
                         self._add_and_persist(Message(
                             role="tool",
-                            content=f"Error: malformed tool arguments - {e}",
+                            content=str(result),
                             tool_call_id=tool_id,
                             name=tool_name,
                         ))
-                        continue
-                    
-                    logger.info(f"Executing tool: {tool_name}({list(tool_args.keys())})")
-                    self._notify_status("tool_call", tool_name)
-                    
-                    # Execute tool (handle both sync and async)
-                    # Sync tools run in thread executor to avoid blocking the event loop
-                    handler = self.get_tool(tool_name)
-                    if handler:
-                        try:
-                            if asyncio.iscoroutinefunction(handler):
-                                result = await handler(**tool_args)
-                            else:
-                                loop = asyncio.get_event_loop()
-                                result = await loop.run_in_executor(
-                                    None, lambda: handler(**tool_args)
-                                )
-                        except Exception as e:
-                            result = f"Error: {e}"
-                            logger.error(f"Tool {tool_name} failed: {e}")
+
+                        if total_tool_errors >= MAX_TOOL_ERRORS:
+                            circuit_breaker_reason = (
+                                f"tool_error_cap hit ({total_tool_errors} errors >= {MAX_TOOL_ERRORS})"
+                            )
+                            break
+                        if repeated_tool_call_streak >= MAX_REPEATED_TOOL_CALLS:
+                            circuit_breaker_reason = (
+                                f"repeated_tool_call_cap hit ({repeated_tool_call_streak} >= {MAX_REPEATED_TOOL_CALLS})"
+                            )
+                            break
+
+                    if turn_had_successful_tool:
+                        no_progress_turns = 0
                     else:
-                        result = f"Unknown tool: {tool_name}"
+                        no_progress_turns += 1
+                        if no_progress_turns >= MAX_NO_PROGRESS_TURNS and not circuit_breaker_reason:
+                            circuit_breaker_reason = (
+                                f"no_progress_cap hit ({no_progress_turns} turns >= {MAX_NO_PROGRESS_TURNS})"
+                            )
                     
-                    logger.info(f"  Result: {str(result)[:100]}...")
-                    
-                    # Check for image attachment in result (send to user)
-                    if isinstance(result, dict) and "_image_attachment" in result:
-                        img = result["_image_attachment"]
-                        if on_image and img.get("path"):
-                            await on_image(img["path"])
-                        # Remove attachment from result for context
-                        result_for_context = {k: v for k, v in result.items() if k != "_image_attachment"}
-                        result = result_for_context
-                    
-                    # Check for image view in result (collect for injection after all tool results)
-                    if isinstance(result, dict) and "_image_view" in result:
-                        img = result["_image_view"]
-                        if img.get("data") and img.get("mime_type"):
-                            images_to_inject.append({
-                                "mime_type": img["mime_type"],
-                                "data": img["data"],
-                                "path": img.get("path", "image")
-                            })
-                        # Remove from result for context
-                        result_for_context = {k: v for k, v in result.items() if k != "_image_view"}
-                        result = result_for_context
-                    
-                    # Add tool result (and persist)
-                    self._add_and_persist(Message(
-                        role="tool",
-                        content=str(result),
-                        tool_call_id=tool_id,
-                        name=tool_name,
-                    ))
-                
-                # Inject images AFTER all tool results (Anthropic requires tool_result immediately after tool_use)
-                for image in images_to_inject:
-                    multimodal_content = [
-                        {"type": "text", "text": f"[Image from {image['path']}]"},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{image['mime_type']};base64,{image['data']}"
+                    # Inject images AFTER all tool results (Anthropic requires tool_result immediately after tool_use)
+                    for image in images_to_inject:
+                        multimodal_content = [
+                            {"type": "text", "text": f"[Image from {image['path']}]"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{image['mime_type']};base64,{image['data']}"
+                                }
                             }
-                        }
-                    ]
-                    self.context.add_message(Message(
-                        role="user",
-                        content=multimodal_content,
-                    ))
-                    logger.info(f"Injected image into context: {image['path']}")
+                        ]
+                        self.context.add_message(Message(
+                            role="user",
+                            content=multimodal_content,
+                        ))
+                        logger.info(f"Injected image into context: {image['path']}")
+                    
+                    # Check if a tool (e.g. terminate()) requested early stop
+                    if self._stop_after_tool:
+                        logger.info("Early stop requested by tool — skipping further API calls")
+                        self._stop_after_tool = False
+                        return content or "Done."
+
+                    if circuit_breaker_reason:
+                        logger.warning(f"Circuit breaker triggered: {circuit_breaker_reason}")
+                        self.context.add_message(Message(
+                            role="user",
+                            content=(
+                                "[Circuit breaker triggered. Stop tool exploration. "
+                                "Respond with a concise partial report now. "
+                                "If you are an actor, call terminate(result) with the partial report.]"
+                            ),
+                        ))
+                        break
+                    
+                    continue  # Loop to get next response
                 
-                # Check if a tool (e.g. terminate()) requested early stop
-                if self._stop_after_tool:
-                    logger.info("Early stop requested by tool — skipping further API calls")
-                    self._stop_after_tool = False
-                    return content or "Done."
-                
-                continue  # Loop to get next response
-            
-            # No tool calls - we have final response
-            if content:
-                self.context.add_message(Message(role="assistant", content=content))
-                return content
-            
-            # Empty response — model stuck
-            empty_count += 1
-            if empty_count >= 2:
-                logger.warning(f"Model returned {empty_count} consecutive empty responses, forcing final")
-                self.context.add_message(Message(
-                    role="user",
-                    content="[Respond to the user now with what you know.]"
-                ))
-                response = await self._call_api_no_tools()
-                content = strip_model_tags(response["choices"][0]["message"].get("content", ""))
+                # No tool calls - we have final response
                 if content:
                     self.context.add_message(Message(role="assistant", content=content))
                     return content
-                return "Done."
-            
-            logger.info(f"Empty response (total tools: {total_tool_calls}), nudging model to respond")
-            self.context.add_message(Message(
-                role="user",
-                content="[You returned an empty response. Respond to the user with what you know so far.]"
-            ))
-            continue
-        
-        # Max iterations reached - continue with escalating pressure to finish
-        if _continuation_depth < MAX_CONTINUATION_DEPTH:
-            next_depth = _continuation_depth + 1
-            logger.info(f"Max tool iterations reached ({total_tool_calls} total tool calls), auto-continuing (depth {next_depth}/{MAX_CONTINUATION_DEPTH})")
-            
-            if next_depth >= MAX_CONTINUATION_DEPTH:
+                
+                # Empty response — model stuck
+                empty_count += 1
+                if empty_count >= 2:
+                    logger.warning(f"Model returned {empty_count} consecutive empty responses, forcing final")
+                    self.context.add_message(Message(
+                        role="user",
+                        content="[Respond to the user now with what you know.]"
+                    ))
+                    response = await self._call_api_no_tools()
+                    content = strip_model_tags(response["choices"][0]["message"].get("content", ""))
+                    if content:
+                        self.context.add_message(Message(role="assistant", content=content))
+                        return content
+                    return "Done."
+                
+                logger.info(f"Empty response (total tools: {total_tool_calls}), nudging model to respond")
+                self.context.add_message(Message(
+                    role="user",
+                    content="[You returned an empty response. Respond to the user with what you know so far.]"
+                ))
+                continue
+
+            if continuation_depth >= MAX_CONTINUATION_DEPTH:
+                break
+            if circuit_breaker_reason:
+                break
+
+            continuation_depth += 1
+            logger.info(
+                f"Max tool iterations reached ({total_tool_calls} total tool calls), "
+                f"auto-continuing (depth {continuation_depth}/{MAX_CONTINUATION_DEPTH})"
+            )
+            if continuation_depth >= MAX_CONTINUATION_DEPTH:
                 # Last chance — MUST respond or delegate
                 nudge = (
                     f"[WRAP UP: You've made {total_tool_calls} tool calls. "
@@ -1197,18 +1258,13 @@ class AsyncLLMClient:
                     f"If more work is needed, consider spawning a subagent. "
                     f"Otherwise, respond to the user with your findings.]"
                 )
-            
-            # Recurse with fresh iteration count
-            return await self.chat(
-                message=nudge,
-                max_tool_iterations=max_tool_iterations,
-                on_message=on_message,
-                on_image=on_image,
-                _continuation_depth=next_depth,
-            )
-        
+            self.context.add_message(Message(role="user", content=nudge))
+
         # Hit continuation limit - request final response without tools
-        logger.warning(f"Max continuation depth reached, requesting final response")
+        if circuit_breaker_reason:
+            logger.warning(f"Requesting final response after circuit breaker: {circuit_breaker_reason}")
+        else:
+            logger.warning("Max continuation depth reached, requesting final response")
         response = await self._call_api_no_tools()
         content = strip_model_tags(response["choices"][0]["message"].get("content", ""))
         

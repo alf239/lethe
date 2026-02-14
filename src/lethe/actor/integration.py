@@ -1,8 +1,8 @@
 """Integration layer — connects actors to the existing Agent/LLM system.
 
-The cortex (principal) is a pure coordinator — it NEVER calls tools itself.
-All work is delegated to subagents who have the actual tools.
-Cortex only has actor tools + memory tools + telegram tools.
+The cortex (principal) runs in intentional hybrid mode:
+- Handle quick local tasks directly (CLI/file/memory/telegram)
+- Delegate long or parallel work to subagents
 
 The DMN (Default Mode Network) is a persistent background subagent that
 replaces heartbeats. It scans goals, reorganizes memory, self-improves,
@@ -21,8 +21,7 @@ from lethe.memory.llm import AsyncLLMClient, LLMConfig
 
 logger = logging.getLogger(__name__)
 
-# Tools the cortex keeps (actor + memory + telegram)
-# Everything else (file, CLI, web, browser) goes to subagents
+# Tools the cortex keeps (hybrid mode: actor + quick CLI/file + memory + telegram)
 CORTEX_TOOL_NAMES = {
     # Actor tools (added by actor system)
     'send_message', 'wait_for_response', 'discover_actors',
@@ -47,8 +46,8 @@ SUBAGENT_DEFAULT_TOOLS = {
 class ActorSystem:
     """Manages the actor system, wiring it into the existing Agent.
     
-    The cortex (principal) only gets actor tools — no file, web, or CLI tools.
-    Those are collected and passed to subagents when they're spawned.
+    The cortex (principal) is hybrid: quick local tasks directly, long work delegated.
+    Subagents still get the broad tool surface for deeper/parallel tasks.
     """
 
     def __init__(self, agent):
@@ -244,6 +243,7 @@ class ActorSystem:
 
     @property
     def status(self) -> dict:
+        recent_events = self.registry.events.query(limit=10)
         return {
             "active_actors": self.registry.active_count,
             "background_tasks": len(self._background_tasks),
@@ -256,5 +256,15 @@ class ActorSystem:
                     "goals": a.goals[:80],
                 }
                 for a in self.registry.all_actors
+            ],
+            "recent_events": [
+                {
+                    "type": e.event_type,
+                    "actor_id": e.actor_id,
+                    "group": e.group,
+                    "payload": e.payload,
+                    "created_at": e.created_at.isoformat(),
+                }
+                for e in recent_events
             ],
         }

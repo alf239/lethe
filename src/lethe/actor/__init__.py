@@ -30,6 +30,14 @@ class ActorState(str, Enum):
     TERMINATED = "terminated"
 
 
+class TaskState(str, Enum):
+    """Task execution states for long-running actors."""
+    PLANNED = "planned"
+    RUNNING = "running"
+    BLOCKED = "blocked"
+    DONE = "done"
+
+
 @dataclass
 class ActorMessage:
     """Message passed between actors."""
@@ -45,6 +53,66 @@ class ActorMessage:
         ts = self.created_at.strftime("%H:%M:%S")
         reply = f" (reply to {self.reply_to})" if self.reply_to else ""
         return f"[{ts}] {self.sender}{reply}: {self.content}"
+
+
+@dataclass
+class ActorEvent:
+    """Structured actor runtime event."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    event_type: str = ""
+    actor_id: str = ""
+    group: str = ""
+    payload: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ActorEventBus:
+    """In-memory event bus for actor runtime observability and orchestration."""
+
+    def __init__(self, max_events: int = 1000):
+        self.max_events = max_events
+        self._events: List[ActorEvent] = []
+        self._subscribers: List[Callable[[ActorEvent], Any]] = []
+
+    def subscribe(self, callback: Callable[[ActorEvent], Any]):
+        self._subscribers.append(callback)
+
+    def emit(self, event: ActorEvent):
+        self._events.append(event)
+        if len(self._events) > self.max_events:
+            self._events = self._events[-self.max_events:]
+        for callback in self._subscribers:
+            try:
+                result = callback(event)
+                if asyncio.iscoroutine(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(result)
+                    except RuntimeError:
+                        pass
+            except Exception as e:
+                logger.warning(f"Event subscriber failed: {e}")
+
+    def query(
+        self,
+        event_type: str = "",
+        actor_id: str = "",
+        group: str = "",
+        since: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> List[ActorEvent]:
+        matches = []
+        for event in self._events:
+            if event_type and event.event_type != event_type:
+                continue
+            if actor_id and event.actor_id != actor_id:
+                continue
+            if group and event.group != group:
+                continue
+            if since and event.created_at < since:
+                continue
+            matches.append(event)
+        return matches[-limit:]
 
 
 @dataclass
@@ -67,11 +135,12 @@ class ActorInfo:
     group: str
     goals: str
     state: ActorState
+    task_state: TaskState
     spawned_by: str  # Actor ID that created this one
 
     def format(self) -> str:
         """Format for inclusion in actor context."""
-        return f"- {self.name} (id={self.id}, state={self.state.value}): {self.goals}"
+        return f"- {self.name} (id={self.id}, state={self.state.value}, task={self.task_state.value}): {self.goals}"
 
 
 class Actor:
@@ -81,6 +150,18 @@ class Actor:
     The principal actor is special — it receives user messages and sends
     responses back to the user.
     """
+
+    _TASK_STATE_TRANSITIONS = {
+        TaskState.PLANNED: {TaskState.RUNNING, TaskState.BLOCKED, TaskState.DONE},
+        TaskState.RUNNING: {TaskState.RUNNING, TaskState.BLOCKED, TaskState.DONE},
+        TaskState.BLOCKED: {TaskState.BLOCKED, TaskState.RUNNING, TaskState.DONE},
+        TaskState.DONE: {TaskState.DONE},
+    }
+
+    _PROMPT_LIMITS = {
+        "principal": {"visible_actors": 10, "inbox_messages": 8, "content_chars": 280, "goal_chars": 180},
+        "subagent": {"visible_actors": 6, "inbox_messages": 5, "content_chars": 220, "goal_chars": 160},
+    }
 
     def __init__(
         self,
@@ -95,6 +176,7 @@ class Actor:
         self.spawned_by = spawned_by or ""
         self.is_principal = is_principal
         self.state = ActorState.INITIALIZING
+        self.task_state = TaskState.PLANNED
         self.created_at: datetime = datetime.now(timezone.utc)
         self.terminated_at: Optional[datetime] = None
         
@@ -110,6 +192,7 @@ class Actor:
         self._llm = None
         # Turn counter
         self._turns = 0
+        self._last_prompt_stats: Dict[str, int] = {}
         
         self.created_at = datetime.now(timezone.utc)
         
@@ -124,8 +207,30 @@ class Actor:
             group=self.config.group,
             goals=self.config.goals,
             state=self.state,
+            task_state=self.task_state,
             spawned_by=self.spawned_by,
         )
+
+    def set_task_state(self, state: str, note: str = "") -> tuple[bool, str]:
+        """Update task execution state with transition validation."""
+        try:
+            new_state = TaskState(state)
+        except ValueError:
+            valid = ", ".join(s.value for s in TaskState)
+            return False, f"Invalid task state '{state}'. Valid: {valid}"
+
+        allowed = self._TASK_STATE_TRANSITIONS[self.task_state]
+        if new_state not in allowed:
+            return False, f"Invalid transition: {self.task_state.value} -> {new_state.value}"
+
+        previous = self.task_state
+        self.task_state = new_state
+        self.registry.emit_event(
+            "task_state_changed",
+            self,
+            {"from": previous.value, "to": new_state.value, "note": note},
+        )
+        return True, f"Task state updated: {previous.value} -> {new_state.value}"
 
     def can_message(self, target_id: str) -> bool:
         """Check if this actor can message another.
@@ -177,6 +282,20 @@ class Actor:
         )
         await recipient.send(msg)
         self._messages.append(msg)
+        preview = content[:200]
+        self.registry.emit_event(
+            "actor_message",
+            self,
+            {"recipient": recipient_id, "message_id": msg.id, "content_preview": preview},
+        )
+        text = content.strip()
+        if text.startswith("[USER_NOTIFY]"):
+            notify = text[len("[USER_NOTIFY]"):].strip()
+            self.registry.emit_event(
+                "user_notify",
+                self,
+                {"recipient": recipient_id, "message_id": msg.id, "message": notify},
+            )
         return msg
 
     async def wait_for_reply(self, timeout: float = 120.0) -> Optional[ActorMessage]:
@@ -193,6 +312,8 @@ class Actor:
         if self.state == ActorState.TERMINATED:
             return  # Already terminated
         self._result = result or f"Actor {self.config.name} terminated"
+        if self.task_state != TaskState.DONE:
+            self.task_state = TaskState.DONE
         self.state = ActorState.TERMINATED
         self.terminated_at = datetime.now(timezone.utc)
         # Cancel async task if running
@@ -253,7 +374,8 @@ class Actor:
         parts.append(f"\n<goals>\n{self.config.goals}\n</goals>")
         
         # Group awareness — show all visible actors
-        group_actors = self.registry.discover(self.config.group)
+        limits = self._PROMPT_LIMITS["principal" if self.is_principal else "subagent"]
+        group_actors = self.registry.discover_active(self.config.group)
         children = self.registry.get_children(self.id)
         
         # Combine group + children (dedup by id)
@@ -268,9 +390,20 @@ class Actor:
                 visible.append(child.info)
                 seen_ids.add(child.id)
         
-        if visible:
+        visible_sorted = sorted(
+            visible,
+            key=lambda info: (
+                info.state == ActorState.TERMINATED,
+                info.name,
+                info.id,
+            ),
+        )
+        omitted_visible = max(0, len(visible_sorted) - limits["visible_actors"])
+        visible_limited = visible_sorted[:limits["visible_actors"]]
+
+        if visible_limited:
             parts.append("\n<visible_actors>")
-            for info in visible:
+            for info in visible_limited:
                 relationship = ""
                 if info.spawned_by == self.id:
                     relationship = " [child]"
@@ -278,11 +411,21 @@ class Actor:
                     relationship = " [parent]"
                 elif info.spawned_by == self.spawned_by and self.spawned_by:
                     relationship = " [sibling]"
-                parts.append(f"- {info.name} (id={info.id}, state={info.state.value}){relationship}: {info.goals}")
+                goal = info.goals[:limits["goal_chars"]]
+                if len(info.goals) > limits["goal_chars"]:
+                    goal += "...[truncated]"
+                parts.append(
+                    f"- {info.name} (id={info.id}, state={info.state.value}, task={info.task_state.value})"
+                    f"{relationship}: {goal}"
+                )
+            if omitted_visible:
+                parts.append(f"- [... {omitted_visible} more active actors omitted to save context ...]")
             parts.append("</visible_actors>")
         
         # Recent messages from other actors
-        inbox_messages = [m for m in self._messages if m.sender != self.id][-10:]
+        all_inbox_messages = [m for m in self._messages if m.sender != self.id]
+        inbox_messages = all_inbox_messages[-limits["inbox_messages"]:]
+        omitted_inbox = max(0, len(all_inbox_messages) - len(inbox_messages))
         if inbox_messages:
             parts.append("\n<inbox>")
             parts.append("Recent messages from other actors:")
@@ -290,7 +433,12 @@ class Actor:
                 sender = self.registry.get(m.sender)
                 sender_name = sender.config.name if sender else m.sender
                 ts = m.created_at.strftime("%H:%M:%S")
-                parts.append(f"[{ts}] {sender_name}: {m.content}")
+                content = m.content[:limits["content_chars"]]
+                if len(m.content) > limits["content_chars"]:
+                    content += "...[truncated]"
+                parts.append(f"[{ts}] {sender_name}: {content}")
+            if omitted_inbox:
+                parts.append(f"[... {omitted_inbox} older inbox messages omitted ...]")
             parts.append("</inbox>")
         
         parts.append("\n<rules>")
@@ -301,17 +449,25 @@ class Actor:
             parts.append("- Use `kill_actor(actor_id)` to terminate a stuck child")
             parts.append("- Use `send_message(actor_id, content)` to give instructions or ask for status")
             parts.append("- Use `discover_actors()` to see all active actors")
+            parts.append("- Use `discover_recently_finished()` to inspect recent completed work")
             parts.append("- Wait for subagent results, then report to the user")
         else:
             parts.append("- Use your tools to accomplish your goals")
             parts.append("- Use `send_message(actor_id, content)` to message parent, siblings, or children")
             parts.append("- Use `spawn_actor(...)` if you need to delegate a subtask")
+            parts.append("- Use `update_task_state(state, note)` to checkpoint: planned/running/blocked/done")
             parts.append("- Use `restart_self(new_goals)` if your goals are unclear or you need a different approach")
             parts.append(f"- Report results to your parent '{parent_name}' (id={self.spawned_by}) before terminating")
             parts.append("- Use `terminate(result)` when done — include a detailed summary")
             parts.append("- If something goes wrong, notify your parent immediately with send_message()")
         parts.append("</rules>")
-        
+
+        self._last_prompt_stats = {
+            "visible_total": len(visible),
+            "visible_included": len(visible_limited),
+            "inbox_total": len(all_inbox_messages),
+            "inbox_included": len(inbox_messages),
+        }
         return "\n".join(parts)
 
     def get_context_messages(self) -> List[Dict]:
@@ -335,9 +491,21 @@ class ActorRegistry:
         self._principal_id: Optional[str] = None
         # Name → ID index for duplicate detection
         self._name_index: Dict[str, str] = {}
+        self.events = ActorEventBus()
         # Callbacks
         self._on_user_message: Optional[Callable] = None
         self._llm_factory: Optional[Callable] = None
+
+    def emit_event(self, event_type: str, actor: Actor, payload: Optional[Dict[str, Any]] = None):
+        """Emit structured actor event."""
+        self.events.emit(
+            ActorEvent(
+                event_type=event_type,
+                actor_id=actor.id,
+                group=actor.config.group,
+                payload=payload or {},
+            )
+        )
 
     def set_llm_factory(self, factory: Callable):
         """Set factory function that creates LLM clients for actors.
@@ -395,6 +563,12 @@ class ActorRegistry:
             self._principal_id = actor.id
         
         actor.state = ActorState.RUNNING
+        actor.task_state = TaskState.RUNNING
+        self.emit_event(
+            "actor_spawned",
+            actor,
+            {"name": actor.config.name, "spawned_by": actor.spawned_by, "is_principal": is_principal},
+        )
         logger.info(f"Registry: spawned {actor.config.name} (id={actor.id}, principal={is_principal})")
         return actor
 
@@ -415,6 +589,31 @@ class ActorRegistry:
             for actor in self._actors.values()
             if actor.config.group == group
         ]
+
+    def discover_active(self, group: str) -> List[ActorInfo]:
+        """Discover active (non-terminated) actors in a group."""
+        return [
+            actor.info
+            for actor in self._actors.values()
+            if actor.config.group == group and actor.state != ActorState.TERMINATED
+        ]
+
+    def discover_terminated(self, group: str) -> List[ActorInfo]:
+        """Discover terminated actors in a group."""
+        return [
+            actor.info
+            for actor in self._actors.values()
+            if actor.config.group == group and actor.state == ActorState.TERMINATED
+        ]
+
+    def discover_recently_finished(self, group: str, limit: int = 5) -> List[Actor]:
+        """Return recently terminated actors in a group, newest first."""
+        terminated = [
+            actor for actor in self._actors.values()
+            if actor.config.group == group and actor.state == ActorState.TERMINATED
+        ]
+        terminated.sort(key=lambda a: a.terminated_at or datetime.fromtimestamp(0, tz=timezone.utc), reverse=True)
+        return terminated[:max(1, limit)]
 
     def get_children(self, parent_id: str) -> List[Actor]:
         """Get all actors spawned by a given parent (including recently terminated)."""
@@ -443,6 +642,11 @@ class ActorRegistry:
             except RuntimeError:
                 parent._messages.append(msg)
                 parent._inbox.put_nowait(msg)
+        self.emit_event(
+            "actor_terminated",
+            actor,
+            {"result": actor._result or "", "turns": actor._turns},
+        )
 
     @property
     def active_count(self) -> int:

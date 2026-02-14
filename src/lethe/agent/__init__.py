@@ -170,7 +170,7 @@ class Agent:
 Summary:"""
         
         try:
-            summary = await self.llm.complete(prompt)  # Uses aux model
+            summary = await self.llm.complete(prompt, use_aux=True)
             return summary.strip() if summary else ""
         except Exception as e:
             logger.warning(f"Failed to summarize history: {e}")

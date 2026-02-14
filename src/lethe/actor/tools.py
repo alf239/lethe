@@ -60,21 +60,24 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
         sender_name = sender.config.name if sender else msg.sender
         return f"[From {sender_name}] {msg.content}"
 
-    def discover_actors(group: str = "") -> str:
+    def discover_actors(group: str = "", include_terminated: bool = False) -> str:
         """Discover actors in a group.
         
         Args:
             group: Group name to search. Empty = same group as you.
+            include_terminated: Include recently terminated actors (default False).
             
         Returns:
             List of actors with their IDs, names, goals, state, and relationship
         """
         search_group = group or actor.config.group
-        actors = registry.discover(search_group)
+        actors = registry.discover(search_group) if include_terminated else registry.discover_active(search_group)
         if not actors:
-            return f"No actors in group '{search_group}'."
+            scope = " (including terminated)" if include_terminated else ""
+            return f"No actors in group '{search_group}'{scope}."
         
-        lines = [f"Actors in group '{search_group}':"]
+        scope = " (including terminated)" if include_terminated else " (active only)"
+        lines = [f"Actors in group '{search_group}'{scope}:"]
         for info in actors:
             marker = " (you)" if info.id == actor.id else ""
             relationship = ""
@@ -89,7 +92,36 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
                 target = registry.get(info.id)
                 if target and target._result:
                     result_info = f" result: {target._result[:100]}"
-            lines.append(f"  {info.name} (id={info.id}, state={info.state.value}){marker}{relationship}: {info.goals}{result_info}")
+            lines.append(
+                f"  {info.name} (id={info.id}, state={info.state.value}, task={info.task_state.value})"
+                f"{marker}{relationship}: {info.goals}{result_info}"
+            )
+        return "\n".join(lines)
+
+    def discover_recently_finished(group: str = "", limit: int = 5) -> str:
+        """Show recently completed actors and their results.
+
+        Args:
+            group: Group name to search. Empty = same group as you.
+            limit: Max actors to show (default 5)
+
+        Returns:
+            Formatted list of recently terminated actors with summary results.
+        """
+        search_group = group or actor.config.group
+        finished = registry.discover_recently_finished(search_group, limit=limit)
+        if not finished:
+            return f"No recently finished actors in group '{search_group}'."
+
+        lines = [f"Recently finished in '{search_group}':"]
+        for a in finished:
+            result = (a._result or "no result").strip()
+            if len(result) > 160:
+                result = result[:160] + "...[truncated]"
+            when = a.terminated_at.strftime("%H:%M:%S") if a.terminated_at else "unknown"
+            lines.append(
+                f"  {a.config.name} (id={a.id}, task={a.task_state.value}, at={when}): {result}"
+            )
         return "\n".join(lines)
 
     def terminate(result: str = "") -> str:
@@ -115,6 +147,7 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
         (send_message, False),
         (wait_for_response, False),
         (discover_actors, False),
+        (discover_recently_finished, False),
         (terminate, False),
     ]
 
@@ -248,6 +281,7 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
         lines = [
             f"Actor: {target.config.name} (id={target.id})",
             f"State: {target.state.value}",
+            f"Task: {target.task_state.value}",
             f"Goals: {target.config.goals}",
             f"Turns: {target._turns}/{target.config.max_turns}",
             f"Messages: {len(target._messages)}",
@@ -294,6 +328,26 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
         return f"Killed actor {target.config.name} ({actor_id})."
     
     tools.append((kill_actor, False))
+
+    def update_task_state(state: str, note: str = "") -> str:
+        """Update your own task state checkpoint.
+
+        Args:
+            state: One of planned, running, blocked, done
+            note: Optional note describing why
+
+        Returns:
+            Confirmation or error
+        """
+        ok, message = actor.set_task_state(state=state, note=note)
+        return message if ok else f"Error: {message}"
+
+    def get_task_state() -> str:
+        """Get your current task state."""
+        return f"Task state: {actor.task_state.value}"
+
+    tools.append((update_task_state, False))
+    tools.append((get_task_state, False))
 
     # --- restart_self: subagent can restart with a better prompt ---
     if not actor.is_principal:

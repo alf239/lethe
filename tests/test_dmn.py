@@ -161,6 +161,37 @@ class TestDMNBasic:
         assert len(dmn_actors) == 1
         assert dmn_actors[0].state == ActorState.TERMINATED
 
+    @pytest.mark.asyncio
+    async def test_dmn_user_notify_sent_via_callback(self, registry, butler, available_tools):
+        """DMN explicit [USER_NOTIFY] messages are delivered via callback."""
+        mock_llm = MagicMock()
+        mock_llm.add_tool = MagicMock()
+        mock_llm.context = MagicMock()
+        mock_llm._tools = {}
+
+        async def fake_chat(message, **kwargs):
+            for actor in registry._actors.values():
+                if actor.config.name == "dmn" and actor.state != ActorState.TERMINATED:
+                    await actor.send_to(butler.id, "[USER_NOTIFY] Deadline in 2 hours")
+                    actor.terminate("done")
+            return "ok"
+
+        mock_llm.chat = fake_chat
+        send_to_user = AsyncMock()
+
+        dmn = DefaultModeNetwork(
+            registry=registry,
+            llm_factory=AsyncMock(),
+            available_tools=available_tools,
+            cortex_id=butler.id,
+            send_to_user=send_to_user,
+        )
+        dmn._create_dmn_llm = AsyncMock(return_value=mock_llm)
+
+        result = await dmn.run_round()
+        assert result is None
+        send_to_user.assert_awaited_once_with("Deadline in 2 hours")
+
 
 class TestDMNState:
     @pytest.mark.asyncio
