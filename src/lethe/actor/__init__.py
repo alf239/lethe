@@ -628,13 +628,24 @@ class ActorRegistry:
         if not actor:
             return
         
+        result_text = (actor._result or "no result").strip()
+        lowered = result_text.lower()
+        is_failed = (
+            lowered.startswith("error:")
+            or lowered.startswith("runner error:")
+            or lowered.startswith("max turns reached")
+            or "killed by parent" in lowered
+            or lowered.startswith("system shutdown")
+        )
+        status_tag = "FAILED" if is_failed else "DONE"
+        
         # Notify parent if exists and running
         parent = self._actors.get(actor.spawned_by) if actor.spawned_by else None
         if parent and parent.state == ActorState.RUNNING:
             msg = ActorMessage(
                 sender=actor_id,
                 recipient=actor.spawned_by,
-                content=f"[TERMINATED] {actor.config.name} finished: {actor._result or 'no result'}",
+                content=f"[{status_tag}] {actor.config.name}: {result_text}",
             )
             try:
                 loop = asyncio.get_running_loop()

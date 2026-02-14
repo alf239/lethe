@@ -447,6 +447,7 @@ Summary:"""
             categories = {
                 "Memory": ["memory_read", "memory_update", "memory_append", "archival_search", "archival_insert", "conversation_search"],
                 "Telegram": ["telegram_react", "telegram_send_message", "telegram_send_file", "send_image"],
+                "Images": ["view_image", "send_image"],
                 "Browser": ["browser_open", "browser_close", "browser_snapshot", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_url"],
                 "File": ["read_file", "write_file", "list_directory"],
                 "CLI": ["run_command", "check_tool"],
@@ -479,7 +480,8 @@ Summary:"""
         
         # Add memory tools (keep minimal — too many tools overwhelms some models)
         for func in [memory_read, memory_update, memory_append, 
-                     archival_search, archival_insert, conversation_search]:
+                     archival_search, archival_insert, conversation_search,
+                     send_image, view_image, list_tools]:
             self.llm.add_tool(func)
     
     def add_tool(self, func: Callable):

@@ -172,7 +172,7 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
             name: Short name for the actor (e.g., "researcher", "coder")
             goals: Detailed description of what to accomplish. Include all context the subagent needs.
             group: Actor group for discovery (default: same as yours)
-            tools: Comma-separated EXTRA tool names beyond the defaults. All subagents always get: bash, read_file, write_file, edit_file, list_directory, grep_search. Specify extras like: "web_search,fetch_webpage,browser_open" etc.
+            tools: Comma-separated EXTRA tool names beyond the defaults. All subagents always get: bash, read_file, write_file, edit_file, list_directory, grep_search, view_image. Specify extras like: "web_search,fetch_webpage,browser_open" etc.
             model: LLM model override (empty = default aux model). Use main model for complex reasoning.
             max_turns: Max LLM turns before forced termination (default 50)
             
@@ -257,7 +257,7 @@ def create_actor_tools(actor: "Actor", registry: "ActorRegistry") -> list:
         return (
             f"Spawned actor '{name}' (id={child.id}, group={target_group}{model_info}).\n"
             f"Goals: {goals[:200]}\n"
-            f"Tools: default (bash, file I/O, grep){' + ' + ', '.join(tool_list) if tool_list else ''} + actor tools\n"
+            f"Tools: default (bash, file I/O, grep, view_image){' + ' + ', '.join(tool_list) if tool_list else ''} + actor tools\n"
             f"It will work autonomously and message you when done."
             f"{_format_children(active_children)}"
         )

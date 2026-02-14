@@ -13,7 +13,7 @@ import asyncio
 import logging
 from typing import Callable, Dict, List, Optional
 
-from lethe.actor import Actor, ActorConfig, ActorRegistry, ActorState
+from lethe.actor import Actor, ActorConfig, ActorMessage, ActorRegistry, ActorState
 from lethe.actor.tools import create_actor_tools
 from lethe.actor.runner import ActorRunner
 from lethe.actor.dmn import DefaultModeNetwork
@@ -34,12 +34,14 @@ CORTEX_TOOL_NAMES = {
     'archival_search', 'archival_insert', 'conversation_search',
     # Telegram tools (cortex talks to user)
     'telegram_send_message', 'telegram_send_file',
+    # Local image inspection/sending
+    'view_image', 'send_image',
 }
 
 # Tools that ALL subagents always get (CLI + file are fundamental)
 SUBAGENT_DEFAULT_TOOLS = {
     'bash', 'read_file', 'write_file', 'edit_file',
-    'list_directory', 'grep_search',
+    'list_directory', 'grep_search', 'view_image',
 }
 
 
@@ -56,6 +58,9 @@ class ActorSystem:
         self.principal: Optional[Actor] = None
         self.dmn: Optional[DefaultModeNetwork] = None
         self._background_tasks: Dict[str, asyncio.Task] = {}
+        self._principal_monitor_task: Optional[asyncio.Task] = None
+        self._processed_principal_message_ids: set[str] = set()
+        self._last_principal_message_idx = 0
         
         # Tools from the agent that subagents can use (not the cortex)
         self._available_tools: Dict[str, tuple] = {}
@@ -133,6 +138,7 @@ class ActorSystem:
             f"Actor system initialized. Principal: {self.principal.id}, "
             f"cortex tools: {tool_count}, subagent tools available: {available_count}, DMN ready"
         )
+        self._start_principal_monitor()
 
     # Tools subagents must NOT have — they communicate via actors only
     SUBAGENT_EXCLUDED_TOOLS = {
@@ -196,6 +202,59 @@ class ActorSystem:
         actor._task = task
         logger.info(f"Started background actor: {actor.config.name} (id={actor.id})")
 
+    def _start_principal_monitor(self):
+        """Monitor principal inbox/messages even when cortex is not in an active LLM loop."""
+        if self._principal_monitor_task and not self._principal_monitor_task.done():
+            return
+
+        async def _monitor():
+            while True:
+                try:
+                    await asyncio.sleep(1.0)
+                    if not self.principal or self.principal.state == ActorState.TERMINATED:
+                        continue
+                    all_messages = self.principal._messages
+                    if self._last_principal_message_idx >= len(all_messages):
+                        continue
+                    new_messages = all_messages[self._last_principal_message_idx:]
+                    self._last_principal_message_idx = len(all_messages)
+                    for msg in new_messages:
+                        if msg.id in self._processed_principal_message_ids:
+                            continue
+                        if msg.recipient != self.principal.id:
+                            continue
+                        if msg.sender == self.principal.id:
+                            continue
+                        self._processed_principal_message_ids.add(msg.id)
+                        await self._handle_principal_message(msg)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Principal monitor error: {e}")
+
+        self._principal_monitor_task = asyncio.create_task(_monitor(), name="actor-principal-monitor")
+
+    async def _handle_principal_message(self, message: ActorMessage):
+        """Process child->principal updates when cortex isn't explicitly waiting."""
+        content = (message.content or "").strip()
+        # DMN has a direct callback path already; avoid duplicate user sends.
+        if content.startswith("[USER_NOTIFY]"):
+            return
+
+        should_notify = False
+        if content.startswith("[FAILED]"):
+            should_notify = True
+        elif content.startswith("[DONE]"):
+            should_notify = True
+        elif content.startswith("[PROGRESS]"):
+            should_notify = False
+
+        if should_notify and self._send_to_user:
+            try:
+                await self._send_to_user(content)
+            except Exception as e:
+                logger.warning(f"Failed to forward principal update to user: {e}")
+
     def set_callbacks(
         self,
         send_to_user: Callable,
@@ -226,6 +285,12 @@ class ActorSystem:
     async def shutdown(self):
         """Shut down all actors gracefully."""
         logger.info(f"Shutting down actor system ({self.registry.active_count} active actors)")
+        if self._principal_monitor_task and not self._principal_monitor_task.done():
+            self._principal_monitor_task.cancel()
+            try:
+                await self._principal_monitor_task
+            except asyncio.CancelledError:
+                pass
         
         for actor in list(self.registry._actors.values()):
             if not actor.is_principal and actor.state != ActorState.TERMINATED:

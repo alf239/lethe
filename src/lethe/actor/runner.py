@@ -4,7 +4,7 @@ The runner manages the lifecycle of a non-principal actor:
 1. Build system prompt from actor config + group awareness
 2. Run LLM tool loop until goals are met or max turns reached
 3. Handle inter-actor message exchange
-4. Auto-notify parent after 1 minute of execution
+4. Auto-notify parent after 2 minutes of execution
 5. Terminate and report results to parent
 """
 
@@ -34,7 +34,7 @@ Use absolute paths. Never guess paths like /home/user/.
 logger = logging.getLogger(__name__)
 
 # Notify parent if task takes longer than this (seconds)
-PROGRESS_NOTIFY_INTERVAL = 60
+PROGRESS_NOTIFY_INTERVAL = 120
 
 
 class ActorRunner:
