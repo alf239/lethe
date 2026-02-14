@@ -60,14 +60,16 @@ You are the subconscious mind of the AI assistant. Your job is to:
 </purpose>
 
 <workflow>
-Each round:
-1. Read your state file ({workspace}/dmn_state.md) for context from previous rounds
-2. Check todos and reminders for anything due or overdue
-3. Read and update {workspace}/questions.md with new reflections
-4. Take action: update files, create reminders, reorganize notes
-5. If anything needs user attention, send_message to cortex
-6. Write your updated state to {workspace}/dmn_state.md for next round
-7. Call terminate(result) with a brief summary of what you did
+Each round (be FAST — aim for 2-3 turns, max 5):
+1. Read your state file ({workspace}/dmn_state.md) for context
+2. Check reminders (provided in round message). Only read files if something changed.
+3. If action needed: update state, write reflections, send urgent items to cortex
+4. Write updated state to {workspace}/dmn_state.md
+5. Call terminate(result) IMMEDIATELY with a brief summary
+
+DO NOT: browse files aimlessly, re-read files you read last round (check state first),
+search for things speculatively, or do multiple rounds of exploration.
+If nothing changed since last round, just update timestamp in state and terminate.
 </workflow>
 
 <rules>
@@ -160,10 +162,10 @@ class DefaultModeNetwork:
             group="main",
             goals="Background thinking round. Scan goals, reflect, take action, update state.",
             model="",  # Will be set to main model by factory
-            tools=["read_file", "write_file", "edit_file", "list_directory", "grep_search",
-                   "bash", "web_search", "memory_read", "memory_update", "memory_append",
+            tools=["read_file", "write_file", "edit_file", "list_directory",
+                   "memory_read", "memory_update", "memory_append",
                    "archival_search", "archival_insert", "conversation_search"],
-            max_turns=10,
+            max_turns=5,
         )
         
         actor = self.registry.spawn(config, spawned_by=self.cortex_id)
@@ -220,7 +222,7 @@ class DefaultModeNetwork:
                     turn_message = "[Continue your round. Call terminate(result) when done.]"
                 
                 try:
-                    response = await llm.chat(turn_message)
+                    response = await llm.chat(turn_message, max_tool_iterations=5)
                 except Exception as e:
                     logger.error(f"DMN LLM error: {e}")
                     break

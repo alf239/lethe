@@ -106,7 +106,8 @@ class ActorSystem:
         original_spawn = self.registry.spawn
         def spawn_and_start(*args, **kwargs):
             actor = original_spawn(*args, **kwargs)
-            if not actor.is_principal:
+            # Auto-start non-principal actors, but NOT DMN — it manages its own loop
+            if not actor.is_principal and actor.config.name != "dmn":
                 self._start_actor(actor)
             return actor
         self.registry.spawn = spawn_and_start
