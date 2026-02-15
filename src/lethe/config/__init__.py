@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     # Database
     db_path: Path = Field(default=Path("./data/lethe.db"), description="SQLite database path")
 
+    # Background cognition modules
+    amygdala_enabled: bool = Field(
+        default=True,
+        description="Enable Amygdala emotional salience actor (heartbeat-triggered, aux model)",
+    )
+
 
 _settings: Optional[Settings] = None
 

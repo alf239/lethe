@@ -68,9 +68,9 @@ async def run():
     actor_system = None
     if os.environ.get("ACTORS_ENABLED", "true").lower() == "true":
         from lethe.actor.integration import ActorSystem
-        actor_system = ActorSystem(agent)
+        actor_system = ActorSystem(agent, settings=settings)
         await actor_system.setup()
-        console.print("[cyan]Actor system[/cyan] initialized (cortex + DMN)")
+        console.print("[cyan]Actor system[/cyan] initialized (cortex + DMN + Amygdala)")
     
     stats = agent.get_stats()
     console.print(f"[green]Agent ready[/green] - {stats['memory_blocks']} blocks, {stats['archival_memories']} memories")
@@ -192,16 +192,16 @@ async def run():
     heartbeat_chat_id = int(allowed_ids.split(",")[0]) if allowed_ids else None
     
     async def heartbeat_process(message: str) -> str:
-        """Process heartbeat — triggers DMN round if actor system is active."""
+        """Process heartbeat — triggers background rounds if actor system is active."""
         if actor_system:
-            result = await actor_system.dmn_round()
+            result = await actor_system.background_round()
             return result or "ok"
         return await agent.heartbeat(message)
     
     async def heartbeat_full_context(message: str) -> str:
-        """Full context heartbeat — also triggers DMN round."""
+        """Full context heartbeat — also triggers background rounds."""
         if actor_system:
-            result = await actor_system.dmn_round()
+            result = await actor_system.background_round()
             return result or "ok"
         return await agent.chat(message, use_hippocampus=False)
     
@@ -272,6 +272,8 @@ async def run():
                         lethe_console.update_actor_status(actor_system.status)
                         if actor_system.dmn:
                             lethe_console.update_dmn_context(actor_system.dmn.get_context_view())
+                        if actor_system.amygdala:
+                            lethe_console.update_amygdala_context(actor_system.amygdala.get_context_view())
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:

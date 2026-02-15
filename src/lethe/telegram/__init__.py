@@ -88,20 +88,27 @@ class TelegramBot:
                 from lethe.actor import ActorState
                 actors = self.actor_system.registry.all_actors
                 
-                # Separate system actors (cortex, dmn) from user-spawned
-                system_names = {"cortex", "dmn"}
+                # Separate system actors (cortex, dmn, amygdala) from user-spawned
+                system_names = {"cortex", "dmn", "amygdala"}
                 active = [a for a in actors if a.state in (ActorState.RUNNING, ActorState.INITIALIZING, ActorState.WAITING)]
                 terminated = [a for a in actors if a.state == ActorState.TERMINATED and a.name not in system_names]
                 
                 # DMN status: sleeping (between rounds) or running
                 dmn_active = any(a.name == "dmn" and a.state == ActorState.RUNNING for a in actors)
                 dmn_status = "🟢 running" if dmn_active else "💤 sleeping (wakes on heartbeat)"
+                amygdala_enabled = bool(getattr(self.actor_system, "amygdala", None))
+                amygdala_active = any(a.name == "amygdala" and a.state == ActorState.RUNNING for a in actors)
+                if not amygdala_enabled:
+                    amygdala_status = "⚪ disabled"
+                else:
+                    amygdala_status = "🟢 running" if amygdala_active else "💤 sleeping (wakes on heartbeat)"
                 
                 # Subagents (non-system)
                 subagents = [a for a in active if a.name not in system_names]
                 
                 lines.append(f"\nCortex: 🟢 active")
                 lines.append(f"DMN: {dmn_status}")
+                lines.append(f"Amygdala: {amygdala_status}")
                 
                 if subagents:
                     lines.append(f"\nSubagents ({len(subagents)} active):")

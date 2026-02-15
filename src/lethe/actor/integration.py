@@ -10,6 +10,7 @@ and notifies the cortex when something needs user attention.
 """
 
 import asyncio
+import json
 import logging
 from typing import Callable, Dict, List, Optional
 
@@ -17,6 +18,8 @@ from lethe.actor import Actor, ActorConfig, ActorMessage, ActorRegistry, ActorSt
 from lethe.actor.tools import create_actor_tools
 from lethe.actor.runner import ActorRunner
 from lethe.actor.dmn import DefaultModeNetwork
+from lethe.actor.amygdala import Amygdala
+from lethe.config import Settings, get_settings
 from lethe.memory.llm import AsyncLLMClient, LLMConfig
 
 logger = logging.getLogger(__name__)
@@ -52,11 +55,13 @@ class ActorSystem:
     Subagents still get the broad tool surface for deeper/parallel tasks.
     """
 
-    def __init__(self, agent):
+    def __init__(self, agent, settings: Optional[Settings] = None):
         self.agent = agent
+        self.settings = settings or get_settings()
         self.registry = ActorRegistry()
         self.principal: Optional[Actor] = None
         self.dmn: Optional[DefaultModeNetwork] = None
+        self.amygdala: Optional[Amygdala] = None
         self._background_tasks: Dict[str, asyncio.Task] = {}
         self._principal_monitor_task: Optional[asyncio.Task] = None
         self._processed_principal_message_ids: set[str] = set()
@@ -139,8 +144,8 @@ class ActorSystem:
         original_spawn = self.registry.spawn
         def spawn_and_start(*args, **kwargs):
             actor = original_spawn(*args, **kwargs)
-            # Auto-start non-principal actors, but NOT DMN — it manages its own loop
-            if not actor.is_principal and actor.config.name != "dmn":
+            # Auto-start non-principal actors, but NOT DMN/Amygdala — they manage their own loops
+            if not actor.is_principal and actor.config.name not in {"dmn", "amygdala"}:
                 self._start_actor(actor)
             return actor
         self.registry.spawn = spawn_and_start
@@ -161,12 +166,23 @@ class ActorSystem:
             get_reminders=self._get_reminders,
             principal_context_provider=self._get_principal_context,
         )
+        if self.settings.amygdala_enabled:
+            self.amygdala = Amygdala(
+                registry=self.registry,
+                available_tools=self._available_tools,
+                cortex_id=self.principal.id,
+                send_to_user=self._send_to_user or (lambda msg: asyncio.sleep(0)),
+                recent_signals_provider=self._get_recent_user_signals,
+                principal_context_provider=self._get_principal_context,
+            )
         
         tool_count = len(self.agent.llm._tools)
         available_count = len(self._available_tools)
+        amygdala_state = "enabled" if self.amygdala else "disabled"
         logger.info(
             f"Actor system initialized. Principal: {self.principal.id}, "
-            f"cortex tools: {tool_count}, subagent tools available: {available_count}, DMN ready"
+            f"cortex tools: {tool_count}, subagent tools available: {available_count}, "
+            f"DMN ready, Amygdala {amygdala_state}"
         )
         self._start_principal_monitor()
 
@@ -276,7 +292,7 @@ class ActorSystem:
 
         # Routine DMN round completion/progress should NOT be pushed to the user.
         # DMN can still escalate via [USER_NOTIFY], and failures are forwarded.
-        if sender_name == "dmn":
+        if sender_name in {"dmn", "amygdala"}:
             if content.startswith("[FAILED]"):
                 should_notify = True
             else:
@@ -312,6 +328,8 @@ class ActorSystem:
         if self.dmn:
             self.dmn.send_to_user = send_to_user
             self.dmn.get_reminders = get_reminders
+        if self.amygdala:
+            self.amygdala.send_to_user = send_to_user
 
     async def dmn_round(self) -> Optional[str]:
         """Run a DMN round. Called by heartbeat timer.
@@ -322,6 +340,18 @@ class ActorSystem:
         if self.dmn is None:
             return None
         return await self.dmn.run_round()
+
+    async def amygdala_round(self) -> Optional[str]:
+        """Run an Amygdala round. Called by heartbeat timer."""
+        if self.amygdala is None:
+            return None
+        return await self.amygdala.run_round()
+
+    async def background_round(self) -> Optional[str]:
+        """Run background cognition rounds (DMN + Amygdala)."""
+        dmn_result = await self.dmn_round()
+        amygdala_result = await self.amygdala_round()
+        return dmn_result or amygdala_result
 
     async def shutdown(self):
         """Shut down all actors gracefully."""
@@ -352,6 +382,7 @@ class ActorSystem:
         all_events = self.registry.events.query(limit=500)
         recent_events = all_events[-10:]
         dmn_status = self.dmn.status if self.dmn else {}
+        amygdala_status = self.amygdala.status if self.amygdala else {}
         actor_last_event_at: dict[str, str] = {}
         for e in all_events:
             actor_last_event_at[e.actor_id] = e.created_at.isoformat()
@@ -384,4 +415,36 @@ class ActorSystem:
                 for e in recent_events
             ],
             "dmn": dmn_status,
+            "amygdala": amygdala_status,
         }
+
+    def _get_recent_user_signals(self) -> str:
+        """Build compact user signal context for Amygdala rounds."""
+        try:
+            recent = self.agent.memory.messages.get_recent(limit=14) or []
+            user_messages = [m for m in recent if m.get("role") == "user"]
+            if not user_messages:
+                return "(no recent user messages)"
+
+            def _clean(content: str) -> str:
+                text = content or ""
+                if text.startswith("[") and text.endswith("]"):
+                    # Stored multimodal payload as JSON list.
+                    try:
+                        data = json.loads(text)
+                        if isinstance(data, list):
+                            parts = [p.get("text", "") for p in data if isinstance(p, dict) and p.get("type") == "text"]
+                            text = " ".join(parts) or text
+                    except Exception:
+                        pass
+                text = " ".join(text.split())
+                return text[:220]
+
+            lines = []
+            for item in user_messages[-8:]:
+                created = (item.get("created_at") or "")[:19]
+                lines.append(f"- [{created}] {_clean(item.get('content', ''))}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"Failed to build recent user signals: {e}")
+            return f"(failed to build user signals: {e})"

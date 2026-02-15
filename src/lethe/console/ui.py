@@ -335,6 +335,7 @@ class ConsoleUI:
                             with ui.tabs().classes("w-full") as ctx_tabs:
                                 tab_llm = ui.tab("LLM")
                                 tab_dmn = ui.tab("DMN")
+                                tab_amygdala = ui.tab("Amygdala")
                                 tab_hippo = ui.tab("Hippocampus")
                             self.ctx_tabs = ctx_tabs
                             self.ctx_tabs.on("update:model-value", self._on_context_tab_change)
@@ -347,6 +348,10 @@ class ConsoleUI:
                                     self.dmn_ctx_scroll = ui.element("div").classes("mc-tab-scroll")
                                     with self.dmn_ctx_scroll:
                                         self.dmn_ctx_container = ui.element("div").classes("w-full")
+                                with ui.tab_panel(tab_amygdala).classes("mc-tab-panel"):
+                                    self.amygdala_ctx_scroll = ui.element("div").classes("mc-tab-scroll")
+                                    with self.amygdala_ctx_scroll:
+                                        self.amygdala_ctx_container = ui.element("div").classes("w-full")
                                 with ui.tab_panel(tab_hippo).classes("mc-tab-panel"):
                                     self.hippo_ctx_scroll = ui.element("div").classes("mc-tab-scroll")
                                     with self.hippo_ctx_scroll:
@@ -408,6 +413,7 @@ class ConsoleUI:
         badges = []
         now = datetime.now(timezone.utc)
         dmn = state.dmn or {}
+        amygdala = state.amygdala or {}
         hip = state.hippocampus or {}
 
         # DMN health
@@ -426,6 +432,23 @@ class ConsoleUI:
             badges.append(f'<span class="mc-badge warn">DMN stale {int(dmn_age_min)}m</span>')
         else:
             badges.append('<span class="mc-badge ok">DMN ok</span>')
+
+        # Amygdala health
+        amy_err = amygdala.get("last_error", "")
+        amy_last = amygdala.get("last_completed_at", "")
+        amy_age_min = 0.0
+        if amy_last:
+            try:
+                dt = datetime.fromisoformat(amy_last.replace("Z", "+00:00"))
+                amy_age_min = (now - dt).total_seconds() / 60.0
+            except Exception:
+                amy_age_min = 0.0
+        if amy_err:
+            badges.append('<span class="mc-badge err">Amygdala error</span>')
+        elif amy_age_min > 45:
+            badges.append(f'<span class="mc-badge warn">Amygdala stale {int(amy_age_min)}m</span>')
+        else:
+            badges.append('<span class="mc-badge ok">Amygdala ok</span>')
 
         # Hippocampus health
         h_calls = int(hip.get("calls", 0) or 0)
@@ -454,6 +477,8 @@ class ConsoleUI:
         src = (source or "").lower()
         if src.startswith("dmn"):
             return "dmn"
+        if src.startswith("amygdala"):
+            return "amygdala"
         if src.startswith("hippocampus"):
             return "hippocampus"
         if src.startswith("actor:"):
@@ -468,7 +493,7 @@ class ConsoleUI:
             return '<span class="mc-meta">TOKENS/H timeline: no usage yet</span>'
 
         now_ts = datetime.now(timezone.utc).timestamp()
-        buckets = [{"cortex": 0, "actors": 0, "dmn": 0, "hippocampus": 0, "other": 0} for _ in range(60)]
+        buckets = [{"cortex": 0, "actors": 0, "dmn": 0, "amygdala": 0, "hippocampus": 0, "other": 0} for _ in range(60)]
         for event in events:
             age_minutes = int((now_ts - float(event.get("ts", now_ts))) // 60)
             if age_minutes < 0 or age_minutes >= 60:
@@ -481,10 +506,11 @@ class ConsoleUI:
             "cortex": sum(b["cortex"] for b in buckets),
             "actors": sum(b["actors"] for b in buckets),
             "dmn": sum(b["dmn"] for b in buckets),
+            "amygdala": sum(b["amygdala"] for b in buckets),
             "hippocampus": sum(b["hippocampus"] for b in buckets),
             "other": sum(b["other"] for b in buckets),
         }
-        order = ["cortex", "actors", "dmn", "hippocampus", "other"]
+        order = ["cortex", "actors", "dmn", "amygdala", "hippocampus", "other"]
         total_60m = sum(totals.values())
         parts = [f'last 60m <b>{total_60m:,}</b>']
         for key in order:
@@ -516,6 +542,7 @@ class ConsoleUI:
         last_event = status.get("actor_last_event_at", {})
         recent_events = status.get("recent_events", [])
         dmn_history = (state.dmn or {}).get("round_history", [])
+        amygdala_history = (state.amygdala or {}).get("round_history", [])
         hip_trace = (state.hippocampus or {}).get("recent_trace", [])
 
         html = []
@@ -552,6 +579,19 @@ class ConsoleUI:
                 html.append(
                     f'<div class="mc-row"><b>{_esc(mode)}</b> {turns}t {dur}s{forced} '
                     f'{_esc(touched_short or "-")}</div>'
+                )
+        else:
+            html.append('<div class="mc-row">No rounds yet</div>')
+
+        html.append('<div class="mc-subhead">Amygdala Rounds</div>')
+        if amygdala_history:
+            for item in list(amygdala_history)[-8:][::-1]:
+                turns = item.get("turns", 0)
+                dur = item.get("duration_seconds", 0)
+                alert = " alert" if item.get("alert") else ""
+                html.append(
+                    f'<div class="mc-row"><b>ROUND</b> {turns}t {dur}s{alert} '
+                    f'{_esc((item.get("result", "") or "-")[:44])}</div>'
                 )
         else:
             html.append('<div class="mc-row">No rounds yet</div>')
@@ -615,6 +655,11 @@ class ConsoleUI:
             dmn_mode = dmn.get("last_mode", "-")
             dmn_turns = dmn.get("last_turns", 0)
             parts.append(f'DMN <b>{_esc(dmn_state)}</b> {dmn_mode}/{dmn_turns}t')
+        amygdala = state.amygdala or {}
+        if amygdala:
+            amy_state = amygdala.get("state", "idle")
+            amy_turns = amygdala.get("last_turns", 0)
+            parts.append(f'AMYGDALA <b>{_esc(amy_state)}</b> {amy_turns}t')
         
         hip = state.hippocampus or {}
         if hip:
@@ -660,6 +705,14 @@ class ConsoleUI:
             )
             if dmn.get("last_error"):
                 parts.append("DMN ERR <b>yes</b>")
+        amygdala = state.amygdala or {}
+        if amygdala:
+            parts.append(
+                f'AMYGDALA ROUND <b>{int(amygdala.get("rounds_total", 0))}</b> '
+                f'LAST <b>{_iso_to_clock(amygdala.get("last_completed_at", ""))}</b>'
+            )
+            if amygdala.get("last_error"):
+                parts.append("AMYGDALA ERR <b>yes</b>")
         
         by_source = state.token_totals_by_source or {}
         if by_source:
@@ -796,6 +849,15 @@ class ConsoleUI:
             )
             self.ctx_info.update()
             return
+        if tab == "Amygdala":
+            text = state.amygdala_context or ""
+            tok = self._estimate_tokens(text)
+            self.ctx_info._props["innerHTML"] = (
+                f'<span class="mc-meta">Amygdala <b class="accent">~{tok:,}</b> tok '
+                f'(<b>{len(text):,}</b> chars)</span>'
+            )
+            self.ctx_info.update()
+            return
         if tab == "Hippocampus":
             text = state.hippocampus_context or ""
             tok = self._estimate_tokens(text)
@@ -858,6 +920,9 @@ class ConsoleUI:
 
         self.dmn_ctx_container._props["innerHTML"] = self._render_text_panel("DMN", state.dmn_context)
         self.dmn_ctx_container.update()
+
+        self.amygdala_ctx_container._props["innerHTML"] = self._render_text_panel("Amygdala", state.amygdala_context)
+        self.amygdala_ctx_container.update()
 
         self.hippo_ctx_container._props["innerHTML"] = self._render_text_panel("hippocampus", state.hippocampus_context)
         self.hippo_ctx_container.update()
