@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections import deque
 from datetime import datetime, timezone
 from typing import Callable, Awaitable, Optional
@@ -136,7 +137,7 @@ class Amygdala:
 
         previous_state = self._read_file(AMYGDALA_STATE_FILE, fallback="(none)")
         recent_signals = self._recent_signals()
-        seed_tags = self._heuristic_seed_tags(recent_signals)
+        seed_tags = await self._llm_seed_tags(recent_signals, previous_state)
 
         config = ActorConfig(
             name="amygdala",
@@ -284,52 +285,113 @@ class Amygdala:
         except Exception as e:
             return f"(failed to get recent signals: {e})"
 
-    def _heuristic_seed_tags(self, recent_signals: str) -> str:
-        lines = [l.strip() for l in recent_signals.splitlines() if l.strip()]
-        seeds = []
-        for line in lines[-8:]:
-            lower = line.lower()
-            arousal = 0.2
-            valence = 0.0
-            tags = []
+    async def _llm_seed_tags(self, recent_signals: str, previous_state: str) -> str:
+        """Use aux LLM to classify recent user signals into emotional seed tags."""
+        if not recent_signals or recent_signals.startswith("(no recent"):
+            return "(none)"
 
-            has_positive = any(k in lower for k in ("great", "love", "thanks", "good", "nice", "awesome"))
-            has_negative = any(k in lower for k in ("angry", "frustrated", "annoyed", "hate", "bad", "broken", "error", "failed"))
-            has_contrast = any(k in lower for k in (" but ", " though ", " however ", " keeps ", " still "))
-            has_sarcasm = ("yeah right" in lower) or ("sure..." in lower) or ("great job" in lower and has_negative)
+        config = LLMConfig()
+        if config.model_aux:
+            config.model = config.model_aux
+        config.context_limit = min(config.context_limit, 16000)
+        config.max_output_tokens = min(config.max_output_tokens, 800)
 
-            if any(k in lower for k in ("urgent", "asap", "now", "immediately", "broken", "error", "failed")):
-                arousal += 0.4
-                tags.append("urgency")
-            if has_negative:
-                arousal += 0.25
-                valence -= 0.5
-                tags.append("negative_affect")
-            if has_positive:
-                valence += 0.5
-                tags.append("positive_affect")
-            # Contrast or sarcasm means positive words may be framing frustration.
-            if has_positive and (has_negative or has_contrast or has_sarcasm):
-                valence -= 0.6
-                arousal += 0.1
-                tags.append("mixed_or_ironic")
-            if any(k in lower for k in ("deadline", "late", "overdue", "risk", "lost")):
-                arousal += 0.2
-                tags.append("risk")
+        classifier = AsyncLLMClient(
+            config=config,
+            system_prompt=(
+                "You classify emotional salience from text. Output strict JSON only: "
+                "an array of objects with keys signal, valence, arousal, tags, confidence."
+            ),
+            usage_scope="amygdala:seed",
+        )
+        prompt = (
+            "Classify the most recent user signals.\n"
+            "Rules:\n"
+            "- valence in [-1,1], arousal in [0,1], confidence in [0,1]\n"
+            "- tags should be short snake_case labels\n"
+            "- capture sarcasm, mixed affect, and contextual inversion\n"
+            "- output max 8 items and ONLY JSON array\n\n"
+            f"Previous state summary:\n{previous_state[:1200]}\n\n"
+            f"Recent signals:\n{recent_signals}\n"
+        )
+
+        try:
+            raw = await classifier.complete(prompt, use_aux=False)
+        except Exception as e:
+            logger.warning("Amygdala seed classification failed: %s", e)
+            return "(none)"
+        finally:
+            try:
+                await classifier.close()
+            except Exception:
+                pass
+
+        if not raw:
+            return "(none)"
+        parsed = self._extract_json_array(raw)
+        if not isinstance(parsed, list):
+            return "(none)"
+
+        normalized = []
+        for item in parsed[:8]:
+            if not isinstance(item, dict):
+                continue
+            signal = str(item.get("signal", "")).strip()[:180]
+            if not signal:
+                continue
+            try:
+                valence = float(item.get("valence", 0.0))
+            except Exception:
+                valence = 0.0
+            try:
+                arousal = float(item.get("arousal", 0.0))
+            except Exception:
+                arousal = 0.0
+            try:
+                confidence = float(item.get("confidence", 0.5))
+            except Exception:
+                confidence = 0.5
+            tags = item.get("tags", [])
+            if not isinstance(tags, list):
+                tags = [str(tags)]
+            clean_tags = [str(t).strip()[:32] for t in tags if str(t).strip()]
             arousal = max(0.0, min(1.0, arousal))
             valence = max(-1.0, min(1.0, valence))
-            seeds.append(
+            confidence = max(0.0, min(1.0, confidence))
+            normalized.append(
                 {
-                    "signal": line[:180],
+                    "signal": signal,
                     "valence": round(valence, 2),
                     "arousal": round(arousal, 2),
-                    "tags": tags or ["neutral"],
+                    "confidence": round(confidence, 2),
+                    "tags": clean_tags or ["neutral"],
                     "high_arousal": arousal >= HIGH_AROUSAL_THRESHOLD,
                 }
             )
-        if not seeds:
+        if not normalized:
             return "(none)"
-        return json.dumps(seeds, ensure_ascii=True, indent=2)
+        return json.dumps(normalized, ensure_ascii=True, indent=2)
+
+    @staticmethod
+    def _extract_json_array(text: str):
+        """Extract first JSON array from model output."""
+        candidate = text.strip()
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
+            candidate = re.sub(r"\s*```$", "", candidate)
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+        start = candidate.find("[")
+        end = candidate.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            return json.loads(candidate[start : end + 1])
+        except Exception:
+            return None
 
     def _compact_tag_log(self):
         """Keep emotional tag log bounded; preserve recent window with brief rollover note."""
