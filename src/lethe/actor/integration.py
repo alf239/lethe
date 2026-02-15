@@ -82,7 +82,7 @@ class ActorSystem:
             human = blocks.get("human") or {}
             project = blocks.get("project") or {}
 
-            def _extract(value: str, max_chars: int = 900) -> str:
+            def _extract(value: str, max_chars: int = 1800) -> str:
                 text = (value or "").strip()
                 return text[:max_chars]
 

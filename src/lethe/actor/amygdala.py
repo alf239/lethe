@@ -25,6 +25,8 @@ AMYGDALA_TAGS_FILE = os.path.join(WORKSPACE_DIR, "emotional_tags.md")
 
 HIGH_AROUSAL_THRESHOLD = 0.75
 FLASHBACK_LOOKBACK = 12
+TAG_LOG_MAX_CHARS = 24000
+TAG_LOG_KEEP_LINES = 140
 
 AMYGDALA_SYSTEM_PROMPT_TEMPLATE = """You are Amygdala — a background emotional salience module.
 
@@ -106,6 +108,7 @@ class Amygdala:
             "last_alert": "",
             "last_result": "",
             "last_error": "",
+            "tags_pruned_total": 0,
         }
         self._round_history: deque[dict] = deque(maxlen=40)
         self._active_patterns: deque[str] = deque(maxlen=FLASHBACK_LOOKBACK)
@@ -129,6 +132,7 @@ class Amygdala:
         self._status["state"] = "running"
         self._status["last_started_at"] = round_started_at.isoformat()
         self._status["last_error"] = ""
+        self._compact_tag_log()
 
         previous_state = self._read_file(AMYGDALA_STATE_FILE, fallback="(none)")
         recent_signals = self._recent_signals()
@@ -246,15 +250,9 @@ class Amygdala:
         )
 
         self._current_actor = None
-
-        if user_message and self.send_to_user:
-            try:
-                await self.send_to_user(user_message)
-                return None
-            except Exception as e:
-                logger.warning("Amygdala: failed to send user notification: %s", e)
-                self._status["last_error"] = f"notify failed: {e}"
-        return user_message
+        self._compact_tag_log()
+        # Amygdala never sends directly to user. It notifies cortex via actor messages.
+        return None
 
     async def _create_amygdala_llm(self, actor: Actor) -> AsyncLLMClient:
         config = LLMConfig()
@@ -273,7 +271,7 @@ class Amygdala:
 
         prompt = AMYGDALA_SYSTEM_PROMPT_TEMPLATE.format(
             workspace=WORKSPACE_DIR,
-            principal_context=principal_context[:1200] or "(none)",
+            principal_context=principal_context[:4000] or "(none)",
         )
         return AsyncLLMClient(config=config, system_prompt=prompt, usage_scope="amygdala")
 
@@ -294,16 +292,27 @@ class Amygdala:
             arousal = 0.2
             valence = 0.0
             tags = []
+
+            has_positive = any(k in lower for k in ("great", "love", "thanks", "good", "nice", "awesome"))
+            has_negative = any(k in lower for k in ("angry", "frustrated", "annoyed", "hate", "bad", "broken", "error", "failed"))
+            has_contrast = any(k in lower for k in (" but ", " though ", " however ", " keeps ", " still "))
+            has_sarcasm = ("yeah right" in lower) or ("sure..." in lower) or ("great job" in lower and has_negative)
+
             if any(k in lower for k in ("urgent", "asap", "now", "immediately", "broken", "error", "failed")):
                 arousal += 0.4
                 tags.append("urgency")
-            if any(k in lower for k in ("angry", "frustrated", "annoyed", "hate", "bad")):
+            if has_negative:
                 arousal += 0.25
                 valence -= 0.5
                 tags.append("negative_affect")
-            if any(k in lower for k in ("great", "love", "thanks", "good", "nice")):
+            if has_positive:
                 valence += 0.5
                 tags.append("positive_affect")
+            # Contrast or sarcasm means positive words may be framing frustration.
+            if has_positive and (has_negative or has_contrast or has_sarcasm):
+                valence -= 0.6
+                arousal += 0.1
+                tags.append("mixed_or_ironic")
             if any(k in lower for k in ("deadline", "late", "overdue", "risk", "lost")):
                 arousal += 0.2
                 tags.append("risk")
@@ -321,6 +330,32 @@ class Amygdala:
         if not seeds:
             return "(none)"
         return json.dumps(seeds, ensure_ascii=True, indent=2)
+
+    def _compact_tag_log(self):
+        """Keep emotional tag log bounded; preserve recent window with brief rollover note."""
+        try:
+            if not os.path.exists(AMYGDALA_TAGS_FILE):
+                return
+            with open(AMYGDALA_TAGS_FILE, "r") as f:
+                content = f.read()
+            if len(content) <= TAG_LOG_MAX_CHARS:
+                return
+
+            lines = content.splitlines()
+            keep = lines[-TAG_LOG_KEEP_LINES:] if len(lines) > TAG_LOG_KEEP_LINES else lines
+            pruned = max(0, len(lines) - len(keep))
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            header = [
+                f"# Emotional tags (compacted at {now})",
+                f"- pruned_lines: {pruned}",
+                "- note: keeping only recent rolling window",
+                "",
+            ]
+            with open(AMYGDALA_TAGS_FILE, "w") as f:
+                f.write("\n".join(header + keep).strip() + "\n")
+            self._status["tags_pruned_total"] = int(self._status.get("tags_pruned_total", 0)) + pruned
+        except Exception as e:
+            logger.warning("Amygdala: failed to compact tag log: %s", e)
 
     def _update_active_patterns(self, seed_tags: str):
         try:
@@ -367,6 +402,7 @@ class Amygdala:
             f"- last_started_at: {self._status.get('last_started_at') or '-'}",
             f"- last_completed_at: {self._status.get('last_completed_at') or '-'}",
             f"- last_error: {self._status.get('last_error') or '-'}",
+            f"- tags_pruned_total: {self._status.get('tags_pruned_total', 0)}",
             "",
             "## Active patterns",
             ", ".join(self.status.get("active_patterns", [])) or "(none)",
