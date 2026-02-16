@@ -1,8 +1,7 @@
 """Brainstem - supervisory actor for boot, health, and update orchestration.
 
 Brainstem starts first, performs integrity/resource/update checks, and keeps
-the system online. It receives heartbeat ticks every two hours via the actor
-integration full-context heartbeat path.
+the system online. It receives heartbeat ticks on the main heartbeat cadence.
 """
 
 from __future__ import annotations
@@ -30,6 +29,8 @@ DEFAULT_RELEASE_API = "https://api.github.com/repos/atemerev/lethe/releases/late
 NOTIFY_COOLDOWN_SECONDS = int(os.environ.get("BRAINSTEM_NOTIFY_COOLDOWN_SECONDS", "21600"))
 RESOURCE_WARN_TOKENS_PER_HOUR = int(os.environ.get("BRAINSTEM_TOKENS_PER_HOUR_WARN", "180000"))
 RESOURCE_WARN_MEMORY_MB = int(os.environ.get("BRAINSTEM_MEMORY_MB_WARN", "1800"))
+ANTHROPIC_WARN_5H_UTIL = float(os.environ.get("BRAINSTEM_ANTHROPIC_5H_UTIL_WARN", "0.85"))
+ANTHROPIC_WARN_7D_UTIL = float(os.environ.get("BRAINSTEM_ANTHROPIC_7D_UTIL_WARN", "0.80"))
 
 
 def _is_true(name: str, default: str = "false") -> bool:
@@ -127,7 +128,7 @@ class Brainstem:
         self._status["state"] = "online"
 
     async def heartbeat(self, heartbeat_message: str = ""):
-        """Run supervisory checks on a full-context heartbeat tick (2h cadence)."""
+        """Run supervisory checks on heartbeat ticks."""
         now = datetime.now(timezone.utc)
         if self._last_heartbeat_at and (now - self._last_heartbeat_at).total_seconds() < 30:
             return
@@ -192,6 +193,36 @@ class Brainstem:
                             "Brainstem warning: process memory is high.",
                         )
                     )
+                ratelimit = resources.get("anthropic_ratelimit") or {}
+                if ratelimit:
+                    unified_status = str(ratelimit.get("unified_status", "")).lower()
+                    five = ratelimit.get("five_hour", {}) or {}
+                    seven = ratelimit.get("seven_day", {}) or {}
+                    five_util = five.get("utilization")
+                    seven_util = seven.get("utilization")
+                    if unified_status and unified_status != "allowed":
+                        findings.append(f"anthropic unified status: {unified_status}")
+                        notify_items.append(
+                            (
+                                "resource:anthropic_status",
+                                f"Brainstem warning: Anthropic unified ratelimit status is '{unified_status}'.",
+                            )
+                        )
+                    near_limit = (
+                        (isinstance(five_util, (float, int)) and five_util >= ANTHROPIC_WARN_5H_UTIL)
+                        or (isinstance(seven_util, (float, int)) and seven_util >= ANTHROPIC_WARN_7D_UTIL)
+                    )
+                    if near_limit:
+                        five_pct = f"{float(five_util) * 100:.0f}%" if isinstance(five_util, (float, int)) else "n/a"
+                        seven_pct = f"{float(seven_util) * 100:.0f}%" if isinstance(seven_util, (float, int)) else "n/a"
+                        findings.append(f"anthropic ratelimit near cap (5h={five_pct}, 7d={seven_pct})")
+                        notify_items.append(
+                            (
+                                "resource:anthropic_near",
+                                "Brainstem warning: Anthropic ratelimit utilization is near cap "
+                                f"(5h={five_pct}, 7d={seven_pct}).",
+                            )
+                        )
 
             if self.integrity_checks_enabled:
                 integrity = self._check_integrity(current_version=current_version)
@@ -348,6 +379,15 @@ class Brainstem:
             f"Brainstem: update {latest_tag} {result}. {output[:240]}",
             kind="update_result",
         )
+        if ok:
+            await self._send_user_notify(
+                (
+                    f"Brainstem updated Lethe to {latest_tag}. "
+                    "New version is available now. "
+                    "If your runtime did not auto-restart, please restart Lethe to apply it."
+                ),
+                kind="brainstem_update_ready",
+            )
 
     async def _run_update_script(self, script_path: Path) -> tuple[bool, str]:
         cmd = os.environ.get("BRAINSTEM_UPDATE_COMMAND", f"bash {shlex.quote(str(script_path))}")
@@ -396,6 +436,7 @@ class Brainstem:
             "process_rss_mb": 0,
             "workspace_free_gb": 0.0,
             "auth_mode": "unknown",
+            "anthropic_ratelimit": {},
         }
         try:
             from lethe.console import get_state
@@ -404,6 +445,7 @@ class Brainstem:
             data["tokens_today"] = int(getattr(state, "tokens_today", 0) or 0)
             data["tokens_per_hour"] = int(getattr(state, "tokens_per_hour", 0) or 0)
             data["api_calls_per_hour"] = int(getattr(state, "api_calls_per_hour", 0) or 0)
+            data["anthropic_ratelimit"] = dict(getattr(state, "anthropic_ratelimit", {}) or {})
         except Exception:
             pass
 

@@ -275,6 +275,7 @@ Enable with `LETHE_CONSOLE=true`. Web dashboard on port 8777.
 | `OPENAI_API_KEY` | OpenAI API key | (one required) |
 | `LLM_MODEL` | Main model | (provider default) |
 | `LLM_MODEL_AUX` | Aux model for summarization | (provider default) |
+| `LLM_MODEL_DMN` | DMN model override (empty = use aux model) | (empty) |
 | `LLM_CONTEXT_LIMIT` | Context window size | `128000` |
 | `EXA_API_KEY` | Exa web search API key | (optional) |
 | `HIPPOCAMPUS_ENABLED` | Enable memory recall | `true` |
@@ -282,12 +283,14 @@ Enable with `LETHE_CONSOLE=true`. Web dashboard on port 8777.
 | `WORKSPACE_DIR` | Agent workspace | `./workspace` |
 | `MEMORY_DIR` | Memory data storage | `./data/memory` |
 | `LETHE_CONSOLE` | Enable web console | `false` |
-| `HEARTBEAT_INTERVAL` | DMN round interval (seconds) | `900` |
+| `HEARTBEAT_INTERVAL` | Main heartbeat interval for DMN/Amygdala/Brainstem (seconds) | `900` |
 | `BACKGROUND_NOTIFY_COOLDOWN_SECONDS` | Minimum interval between forwarded Brainstem/DMN/Amygdala user notifications | `1800` |
 | `BRAINSTEM_AUTO_UPDATE` | Brainstem applies `update.sh` when a newer GitHub release is detected | `true` |
 | `BRAINSTEM_RELEASE_CHECK_ENABLED` | Enable release polling from GitHub API | `true` |
 | `BRAINSTEM_NOTIFY_COOLDOWN_SECONDS` | Brainstem cooldown for repeated alerts | `21600` |
 | `BRAINSTEM_TOKENS_PER_HOUR_WARN` | Resource warning threshold (tokens/hour) | `180000` |
+| `BRAINSTEM_ANTHROPIC_5H_UTIL_WARN` | Anthropic 5h utilization warning threshold (0-1) | `0.85` |
+| `BRAINSTEM_ANTHROPIC_7D_UTIL_WARN` | Anthropic 7d utilization warning threshold (0-1) | `0.80` |
 
 Note: `.env` file takes precedence over shell environment variables.
 

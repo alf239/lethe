@@ -504,8 +504,10 @@ class AnthropicOAuth:
         cache_write = usage.get("cache_creation_input_tokens", 0)
         cache_str = f", cache r/w={cache_read}/{cache_write}" if cache_read or cache_write else ""
         logger.info(f"OAuth API response: {in_tok} in + {out_tok} out tokens{cache_str}")
-        
-        return self._parse_response(data)
+
+        parsed = self._parse_response(data)
+        parsed["_response_headers"] = {k.lower(): v for k, v in response.headers.items()}
+        return parsed
     
     async def close(self):
         """Close the HTTP client."""

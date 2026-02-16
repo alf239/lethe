@@ -194,12 +194,13 @@ async def run():
     async def heartbeat_process(message: str) -> str:
         """Process heartbeat — triggers background rounds if actor system is active."""
         if actor_system:
+            await actor_system.brainstem_heartbeat(message)
             result = await actor_system.background_round()
             return result or "ok"
         return await agent.heartbeat(message)
     
     async def heartbeat_full_context(message: str) -> str:
-        """Full context heartbeat — triggers Brainstem (2h cadence) + background rounds."""
+        """Full context heartbeat — triggers supervision + background rounds."""
         if actor_system:
             await actor_system.brainstem_heartbeat(message)
             result = await actor_system.background_round()

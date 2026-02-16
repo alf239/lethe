@@ -982,6 +982,62 @@ class AsyncLLMClient:
                 track_cache_usage(usage)
             except ImportError:
                 pass
+
+    @staticmethod
+    def _extract_anthropic_ratelimit(headers: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse Anthropic unified ratelimit headers into a structured snapshot."""
+        if not headers:
+            return {}
+        h = {str(k).lower(): str(v) for k, v in headers.items()}
+        if "anthropic-ratelimit-unified-status" not in h:
+            return {}
+
+        def _as_float(value: str) -> Optional[float]:
+            try:
+                return float(value)
+            except Exception:
+                return None
+
+        def _as_int(value: str) -> Optional[int]:
+            try:
+                return int(float(value))
+            except Exception:
+                return None
+
+        return {
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "unified_status": h.get("anthropic-ratelimit-unified-status", ""),
+            "representative_claim": h.get("anthropic-ratelimit-unified-representative-claim", ""),
+            "fallback_percentage": _as_float(h.get("anthropic-ratelimit-unified-fallback-percentage", "")),
+            "unified_reset": _as_int(h.get("anthropic-ratelimit-unified-reset", "")),
+            "five_hour": {
+                "status": h.get("anthropic-ratelimit-unified-5h-status", ""),
+                "reset": _as_int(h.get("anthropic-ratelimit-unified-5h-reset", "")),
+                "utilization": _as_float(h.get("anthropic-ratelimit-unified-5h-utilization", "")),
+            },
+            "seven_day": {
+                "status": h.get("anthropic-ratelimit-unified-7d-status", ""),
+                "reset": _as_int(h.get("anthropic-ratelimit-unified-7d-reset", "")),
+                "utilization": _as_float(h.get("anthropic-ratelimit-unified-7d-utilization", "")),
+            },
+        }
+
+    def _track_provider_headers(self, result: Dict):
+        """Track provider-specific response headers for supervision modules."""
+        if not isinstance(result, dict):
+            return
+        headers = result.get("_response_headers")
+        if not headers:
+            return
+        snapshot = self._extract_anthropic_ratelimit(headers)
+        if not snapshot:
+            return
+        try:
+            from lethe.console import update_anthropic_ratelimit
+
+            update_anthropic_ratelimit(snapshot)
+        except ImportError:
+            pass
     
     def load_messages(self, messages: List[dict]):
         """Load existing messages from history into context.
@@ -1051,10 +1107,6 @@ class AsyncLLMClient:
                         if not tc.get("id"):
                             tc["id"] = f"call-{uuid.uuid4().hex[:12]}"
                 
-                # Callback with intermediate message (only when there are tool calls - i.e. more work to do)
-                # Don't callback with final response - that's returned and handled by caller
-                if content and on_message and tool_calls:
-                    await on_message(strip_model_tags(content))
                 if tool_calls:
                     # Add assistant message with tool calls (and persist)
                     self._add_and_persist(Message(
@@ -1165,6 +1217,10 @@ class AsyncLLMClient:
                             break
 
                     if turn_had_successful_tool:
+                        # Send intermediate updates only after actual successful tool execution.
+                        # This avoids "Let me..." progress spam when tools were proposed but not used.
+                        if content and on_message:
+                            await on_message(strip_model_tags(content))
                         no_progress_turns = 0
                     else:
                         no_progress_turns += 1
@@ -1309,6 +1365,7 @@ class AsyncLLMClient:
             try:
                 response = await acompletion(**kwargs)
                 result = response.model_dump()
+                self._track_provider_headers(result)
                 _log_llm_interaction(kwargs, result, log_type)
                 return result
             except Exception as e:
@@ -1357,6 +1414,7 @@ class AsyncLLMClient:
                     model=model,
                     max_tokens=max_tokens,
                 )
+                self._track_provider_headers(result)
                 _log_llm_interaction(kwargs, result, f"{log_type}_oauth")
                 return result
             except Exception as e:

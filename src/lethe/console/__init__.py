@@ -62,6 +62,7 @@ class ConsoleState:
     api_calls_per_hour: float = 0.0
     token_events: deque = field(default_factory=lambda: deque(maxlen=4096))
     token_totals_by_source: Dict[str, int] = field(default_factory=dict)
+    anthropic_ratelimit: Dict[str, Any] = field(default_factory=dict)
     
     # Cache stats (from API response usage.prompt_tokens_details)
     cache_read_tokens: int = 0       # Total cached tokens read today
@@ -360,4 +361,12 @@ def update_amygdala_context(context: str):
     context = context or ""
     if _state.amygdala_context != context:
         _state.amygdala_context = context
+        _state.version += 1
+
+
+def update_anthropic_ratelimit(snapshot: dict):
+    """Update latest Anthropic unified ratelimit snapshot."""
+    snapshot = snapshot or {}
+    if _state.anthropic_ratelimit != snapshot:
+        _state.anthropic_ratelimit = snapshot
         _state.version += 1

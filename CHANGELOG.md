@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.10.2 - 2026-02-16
+
+### Added
+- Explicit DMN model override config via `LLM_MODEL_DMN` (fallback remains automatic).
+- Brainstem Anthropic unified ratelimit awareness with configurable warning thresholds.
+- Brainstem successful self-update now emits a user-facing restart availability notice via cortex.
+
+### Changed
+- DMN now uses aux model by default unless explicit DMN model is configured.
+- Brainstem supervision moved to main heartbeat cadence (default 15 minutes) for regular low-cost checks.
+- Heartbeat/README/docs updated to reflect shared cadence for DMN, Amygdala, and Brainstem.
+- Hippocampus recall payloads now apply hard caps and conversation-entry filtering to reduce noisy/oversized recall context.
+
+### Fixed
+- Anthropic OAuth response headers are now captured and exposed for runtime supervision.
+- Brainstem now escalates near-limit Anthropic utilization and non-allowed unified status to cortex/user notify path.
+- Intermediate assistant progress updates are now emitted only after successful tool execution, reducing progress spam.
+
 ## v0.10.1 - 2026-02-15
 
 ### Changed

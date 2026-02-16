@@ -6,7 +6,9 @@ import pytest
 from unittest.mock import AsyncMock
 
 from lethe.actor import ActorConfig, ActorRegistry
+from lethe.actor.brainstem import Brainstem
 from lethe.actor.integration import ActorSystem
+from lethe.config import Settings
 from lethe.memory.llm import AsyncLLMClient, LLMConfig
 import lethe.actor.integration as actor_integration
 
@@ -276,4 +278,140 @@ async def test_view_image_tool_registered_and_available_to_cortex(monkeypatch):
         assert "view_image" in agent.llm._tools
         actor_system = ActorSystem(agent)
         await actor_system.setup()
-        assert "view_image" in agent.llm._tools  # Kept on cortex in hybrid mode.
+    assert "view_image" in agent.llm._tools  # Kept on cortex in hybrid mode.
+
+
+def test_extract_anthropic_unified_ratelimit_headers():
+    headers = {
+        "anthropic-ratelimit-unified-status": "allowed",
+        "anthropic-ratelimit-unified-5h-status": "allowed",
+        "anthropic-ratelimit-unified-5h-reset": "1771243200",
+        "anthropic-ratelimit-unified-5h-utilization": "0.32",
+        "anthropic-ratelimit-unified-7d-status": "allowed",
+        "anthropic-ratelimit-unified-7d-reset": "1771639200",
+        "anthropic-ratelimit-unified-7d-utilization": "0.75",
+        "anthropic-ratelimit-unified-representative-claim": "five_hour",
+        "anthropic-ratelimit-unified-fallback-percentage": "0.5",
+        "anthropic-ratelimit-unified-reset": "1771243200",
+    }
+
+    parsed = AsyncLLMClient._extract_anthropic_ratelimit(headers)
+    assert parsed["unified_status"] == "allowed"
+    assert parsed["representative_claim"] == "five_hour"
+    assert parsed["fallback_percentage"] == pytest.approx(0.5)
+    assert parsed["five_hour"]["utilization"] == pytest.approx(0.32)
+    assert parsed["seven_day"]["utilization"] == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_brainstem_escalates_anthropic_near_limit_to_cortex(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("BRAINSTEM_RELEASE_CHECK_ENABLED", "false")
+    monkeypatch.setenv("BRAINSTEM_INTEGRITY_CHECK_ENABLED", "false")
+    monkeypatch.setenv("BRAINSTEM_RESOURCE_CHECK_ENABLED", "true")
+    monkeypatch.setattr("lethe.actor.brainstem.ANTHROPIC_WARN_5H_UTIL", 0.85)
+    monkeypatch.setattr("lethe.actor.brainstem.ANTHROPIC_WARN_7D_UTIL", 0.80)
+
+    workspace = tmp_path / "workspace"
+    memory = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    db_parent = tmp_path / "data"
+    workspace.mkdir()
+    memory.mkdir()
+    config_dir.mkdir()
+    db_parent.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test-token",
+        telegram_allowed_user_ids="1",
+        workspace_dir=workspace,
+        memory_dir=memory,
+        lethe_config_dir=config_dir,
+        db_path=db_parent / "lethe.db",
+    )
+
+    registry = ActorRegistry()
+    cortex = registry.spawn(ActorConfig(name="cortex", group="main", goals="serve"), is_principal=True)
+    brainstem = Brainstem(
+        registry=registry,
+        settings=settings,
+        cortex_id=cortex.id,
+        install_dir=str(tmp_path),
+    )
+    await brainstem.startup()
+
+    brainstem._collect_resource_snapshot = lambda: {
+        "tokens_today": 10,
+        "tokens_per_hour": 1,
+        "api_calls_per_hour": 1,
+        "process_rss_mb": 100,
+        "workspace_free_gb": 1.0,
+        "auth_mode": "subscription_oauth",
+        "anthropic_ratelimit": {
+            "unified_status": "allowed",
+            "five_hour": {"utilization": 0.90},
+            "seven_day": {"utilization": 0.75},
+        },
+    }
+
+    await brainstem.heartbeat("tick")
+
+    near_limit_msg = None
+    for _ in range(20):
+        msg = await cortex.wait_for_reply(timeout=0.2)
+        if not msg:
+            continue
+        if "anthropic ratelimit near cap" in (msg.content or "").lower():
+            near_limit_msg = msg
+            break
+    assert near_limit_msg is not None
+    assert near_limit_msg.metadata.get("channel") == "task_update"
+
+
+@pytest.mark.asyncio
+async def test_brainstem_auto_update_success_notifies_user_offer_restart(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    workspace = tmp_path / "workspace"
+    memory = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    db_parent = tmp_path / "data"
+    workspace.mkdir()
+    memory.mkdir()
+    config_dir.mkdir()
+    db_parent.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test-token",
+        telegram_allowed_user_ids="1",
+        workspace_dir=workspace,
+        memory_dir=memory,
+        lethe_config_dir=config_dir,
+        db_path=db_parent / "lethe.db",
+    )
+
+    registry = ActorRegistry()
+    cortex = registry.spawn(ActorConfig(name="cortex", group="main", goals="serve"), is_principal=True)
+    brainstem = Brainstem(
+        registry=registry,
+        settings=settings,
+        cortex_id=cortex.id,
+        install_dir=str(tmp_path),
+    )
+    brainstem.auto_update_enabled = True
+    brainstem._seen_release_tag = ""
+    brainstem._repo_dirty = lambda: False
+    brainstem._run_update_script = AsyncMock(return_value=(True, "updated"))
+    brainstem._send_task_update = AsyncMock()
+    brainstem._send_user_notify = AsyncMock()
+
+    # ensure update.sh exists so skip path is not taken
+    (tmp_path / "update.sh").write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+
+    await brainstem._maybe_auto_update("v9.9.9")
+
+    brainstem._send_task_update.assert_awaited()
+    brainstem._send_user_notify.assert_awaited_once()
+    notify_text = brainstem._send_user_notify.await_args.args[0]
+    assert "v9.9.9" in notify_text
+    assert "restart" in notify_text.lower()

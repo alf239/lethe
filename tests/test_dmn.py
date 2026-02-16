@@ -4,7 +4,7 @@ Tests cover:
 - DMN round execution
 - State file persistence between rounds
 - Butler notification on urgent items
-- Main model usage (not aux)
+- Model selection behavior (aux default, explicit override honored)
 - Tool availability
 """
 
@@ -195,6 +195,54 @@ class TestDMNBasic:
         result = await dmn.run_round()
         assert result is None
         send_to_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dmn_uses_aux_model_by_default(self, registry, butler, available_tools, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, config, system_prompt, usage_scope):
+                captured["model"] = config.model
+                captured["model_aux"] = config.model_aux
+                self._tools = {}
+
+        dmn = DefaultModeNetwork(
+            registry=registry,
+            llm_factory=AsyncMock(),
+            available_tools=available_tools,
+            cortex_id=butler.id,
+            send_to_user=AsyncMock(),
+        )
+
+        with patch("lethe.actor.dmn.AsyncLLMClient", FakeClient):
+            await dmn._create_dmn_llm(butler)
+
+        assert captured["model"] == captured["model_aux"]
+
+    @pytest.mark.asyncio
+    async def test_dmn_model_override_takes_precedence(self, registry, butler, available_tools, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, config, system_prompt, usage_scope):
+                captured["model"] = config.model
+                self._tools = {}
+
+        dmn = DefaultModeNetwork(
+            registry=registry,
+            llm_factory=AsyncMock(),
+            available_tools=available_tools,
+            cortex_id=butler.id,
+            send_to_user=AsyncMock(),
+            model_override="openrouter/moonshotai/kimi-k2.5-0127",
+        )
+
+        with patch("lethe.actor.dmn.AsyncLLMClient", FakeClient):
+            await dmn._create_dmn_llm(butler)
+
+        assert captured["model"] == "openrouter/moonshotai/kimi-k2.5-0127"
 
 
 class TestDMNState:

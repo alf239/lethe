@@ -9,6 +9,7 @@ This produces better results than raw message similarity search.
 
 import json
 import logging
+import os
 import re
 from collections import deque
 from typing import Optional, Callable, Awaitable
@@ -20,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 # Max lines of recalled memories before summarization
 MAX_RECALL_LINES = 500
+# Hard cap for final recall payload size (approximate token budget)
+MAX_RECALL_TOKENS = int(os.environ.get("HIPPOCAMPUS_MAX_RECALL_TOKENS", "2500"))
+APPROX_CHARS_PER_TOKEN = 4
+MAX_RECALL_CHARS = MAX_RECALL_TOKENS * APPROX_CHARS_PER_TOKEN
+MAX_CONVERSATION_RECALL_ENTRY_CHARS = int(os.environ.get("HIPPOCAMPUS_MAX_CONVERSATION_ENTRY_CHARS", "12000"))
 
 # Minimum score threshold for including memories
 MIN_SCORE_THRESHOLD = 0.3
@@ -205,6 +211,7 @@ class Hippocampus:
         # Step 3: Summarize if we have a summarizer
         if self.summarizer:
             result = await self._summarize(memories)
+            result = self._cap_recall_payload(result)
             self._stats["recalls"] += 1
             self._stats["last_recall_chars"] = len(result or "")
             self._stats["last_reason"] = analysis.get("reason", "")
@@ -227,6 +234,7 @@ class Hippocampus:
                 + memories
                 + "\n</associative_memory_recall>"
             )
+            result = self._cap_recall_payload(result)
             self._stats["recalls"] += 1
             self._stats["last_recall_chars"] = len(result)
             self._stats["last_reason"] = analysis.get("reason", "")
@@ -373,10 +381,36 @@ class Hippocampus:
         try:
             results = self.memory.messages.search(query, limit=limit + exclude_recent)
             # Skip the most recent messages (they're already in context)
-            return results[exclude_recent:] if len(results) > exclude_recent else []
+            candidates = results[exclude_recent:] if len(results) > exclude_recent else []
+            filtered = [m for m in candidates if self._conversation_entry_allowed(m)]
+            dropped = len(candidates) - len(filtered)
+            if dropped > 0:
+                logger.info("Hippocampus: dropped %s tool/oversized conversation entries", dropped)
+            return filtered
         except Exception as e:
             logger.warning(f"Conversation search failed: {e}")
             return []
+
+    def _conversation_entry_allowed(self, msg: dict) -> bool:
+        """Filter noisy conversation recall entries.
+
+        We skip tool-role messages and assistant tool-call scaffolding to avoid
+        recalling large tool transcripts into the main prompt.
+        """
+        role = str(msg.get("role", "")).strip().lower()
+        metadata = msg.get("metadata", {}) or {}
+        content = msg.get("content", "")
+        if role == "tool":
+            return False
+        if metadata.get("tool_call_id") or metadata.get("name"):
+            return False
+        if role == "assistant" and metadata.get("tool_calls"):
+            return False
+        if not isinstance(content, str):
+            content = str(content)
+        if len(content) > MAX_CONVERSATION_RECALL_ENTRY_CHARS:
+            return False
+        return True
     
     async def _filter_relevant(
         self,
@@ -553,6 +587,17 @@ class Hippocampus:
             + memories
             + "\n</associative_memory_recall>"
         )
+
+    def _cap_recall_payload(self, text: Optional[str]) -> str:
+        """Cap recall payload to a fixed approximate token budget."""
+        if not text:
+            return ""
+        if len(text) <= MAX_RECALL_CHARS:
+            return text
+        keep = max(1000, MAX_RECALL_CHARS - 160)
+        head = text[:keep]
+        omitted = len(text) - keep
+        return f"{head}\n\n[... hippocampus recall truncated, omitted {omitted:,} chars ...]"
 
     async def augment_message(
         self,

@@ -9,7 +9,8 @@ heartbeat-to-cortex pipeline with a dedicated thinking agent that:
 - Notifies cortex when something needs user attention
 - Works in rounds: reads previous round's state, thinks, acts, saves state
 
-Uses the MAIN model (not aux) — it needs full reasoning capability.
+Uses the AUX model by default for cost efficiency.
+Can use explicit DMN model override when configured.
 Uses aggressive prompt caching — its system prompt is stable.
 """
 
@@ -77,7 +78,7 @@ class DefaultModeNetwork:
     
     The DMN is a special actor that:
     - Is spawned once at startup and re-spawned each heartbeat round
-    - Uses the main model (not aux) for full reasoning
+    - Uses aux model by default (or explicit DMN model override)
     - Has memory tools, file tools, todo tools
     - Can send messages to the cortex for user notifications
     - Persists state between rounds via a file
@@ -92,6 +93,7 @@ class DefaultModeNetwork:
         send_to_user: Callable[[str], Awaitable[None]],
         get_reminders: Optional[Callable[[], Awaitable[str]]] = None,
         principal_context_provider: Optional[Callable[[], str]] = None,
+        model_override: str = "",
     ):
         self.registry = registry
         self.llm_factory = llm_factory
@@ -100,6 +102,7 @@ class DefaultModeNetwork:
         self.send_to_user = send_to_user
         self.get_reminders = get_reminders
         self.principal_context_provider = principal_context_provider
+        self.model_override = (model_override or "").strip()
         self._current_actor: Optional[Actor] = None
         self._status: dict = {
             "state": "idle",
@@ -343,10 +346,12 @@ class DefaultModeNetwork:
         return None
 
     async def _create_dmn_llm(self, actor: Actor) -> AsyncLLMClient:
-        """Create LLM client for DMN with main model and stable system prompt."""
+        """Create LLM client for DMN with configured/default model and stable prompt."""
         config = LLMConfig()
-        # DMN uses MAIN model — needs full reasoning capability
-        # config.model is already the main model by default
+        if self.model_override:
+            config.model = self.model_override
+        elif config.model_aux:
+            config.model = config.model_aux
         
         # Reasonable context for background work
         config.context_limit = min(config.context_limit, 64000)

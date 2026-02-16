@@ -186,6 +186,7 @@ class ActorSystem:
             send_to_user=self._send_to_user or (lambda msg: asyncio.sleep(0)),
             get_reminders=self._get_reminders,
             principal_context_provider=self._get_principal_context,
+            model_override=self.settings.llm_model_dmn,
         )
         if self.settings.amygdala_enabled:
             self.amygdala = Amygdala(
@@ -412,7 +413,7 @@ class ActorSystem:
         return await self.amygdala.run_round()
 
     async def brainstem_heartbeat(self, heartbeat_message: str = "") -> Optional[str]:
-        """Run Brainstem supervisory checks (full-context heartbeat cadence)."""
+        """Run Brainstem supervisory checks (main heartbeat cadence)."""
         if self.brainstem is None:
             return None
         await self.brainstem.heartbeat(heartbeat_message=heartbeat_message)

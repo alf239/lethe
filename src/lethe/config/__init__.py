@@ -44,6 +44,10 @@ class Settings(BaseSettings):
         default="",
         description="Auxiliary LLM model for heartbeats, summarization (empty = use main model)",
     )
+    llm_model_dmn: str = Field(
+        default="",
+        description="DMN LLM model override (empty = use aux model)",
+    )
     llm_api_base: str = Field(
         default="",
         description="Custom API base URL for local/compatible providers (empty = use provider default)",
