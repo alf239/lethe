@@ -50,7 +50,7 @@ INSTALL_MODE="container"
 # NOTE: claude-max disabled - Anthropic blocked third-party OAuth in Jan 2026
 declare -A PROVIDERS=(
     ["openrouter"]="OpenRouter (recommended - access to all models)"
-    ["anthropic"]="Anthropic API (Claude models with API key)"
+    ["anthropic"]="Anthropic (API key or Claude subscription token)"
     ["openai"]="OpenAI (GPT models)"
 )
 declare -A PROVIDER_KEYS=(
@@ -143,6 +143,9 @@ detect_api_keys() {
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
         DETECTED_PROVIDERS+=("anthropic")
     fi
+    if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " anthropic " ]]; then
+        DETECTED_PROVIDERS+=("anthropic")
+    fi
     if [ -n "${OPENAI_API_KEY:-}" ]; then
         DETECTED_PROVIDERS+=("openai")
     fi
@@ -154,11 +157,15 @@ detect_api_keys() {
         local cfg_oa_key
         cfg_or_key="$(get_env_value "OPENROUTER_API_KEY" "$CONFIG_DIR/.env" || true)"
         cfg_an_key="$(get_env_value "ANTHROPIC_API_KEY" "$CONFIG_DIR/.env" || true)"
+        cfg_an_auth="$(get_env_value "ANTHROPIC_AUTH_TOKEN" "$CONFIG_DIR/.env" || true)"
         cfg_oa_key="$(get_env_value "OPENAI_API_KEY" "$CONFIG_DIR/.env" || true)"
         if [ -n "${cfg_or_key:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " openrouter " ]]; then
             DETECTED_PROVIDERS+=("openrouter")
         fi
         if [ -n "${cfg_an_key:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " anthropic " ]]; then
+            DETECTED_PROVIDERS+=("anthropic")
+        fi
+        if [ -n "${cfg_an_auth:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " anthropic " ]]; then
             DETECTED_PROVIDERS+=("anthropic")
         fi
         if [ -n "${cfg_oa_key:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " openai " ]]; then
@@ -256,16 +263,34 @@ prompt_model() {
 prompt_api_key() {
     local key_name="${PROVIDER_KEYS[$SELECTED_PROVIDER]}"
     local key_url="${PROVIDER_URLS[$SELECTED_PROVIDER]}"
+
+    if [[ "$SELECTED_PROVIDER" == "anthropic" ]]; then
+        echo ""
+        echo -e "${YELLOW}Anthropic auth mode:${NC}"
+        echo "  1) API key (pay-per-token)"
+        echo "  2) Claude subscription token (Claude Code)"
+        echo ""
+        prompt_read "Choose [1-2, default=2]: " auth_choice
+        auth_choice=${auth_choice:-2}
+        if [[ "$auth_choice" == "1" ]]; then
+            key_name="ANTHROPIC_API_KEY"
+            key_url="https://console.anthropic.com/settings/keys"
+        else
+            key_name="ANTHROPIC_AUTH_TOKEN"
+            key_url="Run: claude setup-token"
+        fi
+    fi
     
     # Check if already have key in environment or existing config
     local existing_key=""
     local key_source=""
     
     # First check environment
-    case $SELECTED_PROVIDER in
-        openrouter) existing_key="${OPENROUTER_API_KEY:-}" ;;
-        anthropic) existing_key="${ANTHROPIC_API_KEY:-}" ;;
-        openai) existing_key="${OPENAI_API_KEY:-}" ;;
+    case $key_name in
+        OPENROUTER_API_KEY) existing_key="${OPENROUTER_API_KEY:-}" ;;
+        ANTHROPIC_API_KEY) existing_key="${ANTHROPIC_API_KEY:-}" ;;
+        ANTHROPIC_AUTH_TOKEN) existing_key="${ANTHROPIC_AUTH_TOKEN:-}" ;;
+        OPENAI_API_KEY) existing_key="${OPENAI_API_KEY:-}" ;;
     esac
     [ -n "$existing_key" ] && key_source="environment"
     
@@ -294,18 +319,34 @@ prompt_api_key() {
         
         if [[ "$choice" == "1" ]]; then
             API_KEY="$existing_key"
+            SELECTED_AUTH_KEY_NAME="$key_name"
             return
         fi
     fi
     
     echo ""
     echo -e "${BLUE}$key_name required${NC}"
-    echo "   Get your key at: $key_url"
+    if [[ "$key_name" == "ANTHROPIC_AUTH_TOKEN" ]]; then
+        echo "   Step 1: Run 'claude setup-token' in another terminal and complete login."
+        if check_command claude; then
+            prompt_read "   Run 'claude setup-token' now? [Y/n]: " run_setup
+            run_setup=${run_setup:-Y}
+            if [[ "$run_setup" =~ ^[Yy] ]]; then
+                claude setup-token || warn "claude setup-token did not complete. You can run it manually and continue."
+            fi
+        else
+            echo "   Claude CLI not found. Install Claude Code CLI, run 'claude setup-token', then paste token below."
+        fi
+        echo "   Step 2: Paste your ANTHROPIC_AUTH_TOKEN."
+    else
+        echo "   Get your key at: $key_url"
+    fi
     echo ""
     prompt_read "   $key_name: " API_KEY
     if [ -z "$API_KEY" ]; then
         error "$key_name is required"
     fi
+    SELECTED_AUTH_KEY_NAME="$key_name"
 }
 
 prompt_telegram() {
@@ -487,7 +528,7 @@ clone_repo() {
 setup_config() {
     mkdir -p "$CONFIG_DIR"
     
-    local key_name="${PROVIDER_KEYS[$SELECTED_PROVIDER]}"
+    local key_name="${SELECTED_AUTH_KEY_NAME:-${PROVIDER_KEYS[$SELECTED_PROVIDER]}}"
     local api_key_line=""
     
     # Only add API key line if not using OAuth provider
@@ -790,7 +831,11 @@ setup_container() {
     $CONTAINER_CMD build --load -t lethe:latest .
     
     # Create env file for container
-    local key_name="${PROVIDER_KEYS[$SELECTED_PROVIDER]}"
+    local key_name="${SELECTED_AUTH_KEY_NAME:-${PROVIDER_KEYS[$SELECTED_PROVIDER]}}"
+    local auth_line=""
+    if [[ -n "$key_name" && -n "$API_KEY" ]]; then
+        auth_line="$key_name=$API_KEY"
+    fi
     
     cat > "$CONFIG_DIR/container.env" << EOF
 TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN
@@ -799,7 +844,7 @@ LLM_PROVIDER=$SELECTED_PROVIDER
 LLM_MODEL=$SELECTED_MODEL
 LLM_MODEL_AUX=$SELECTED_MODEL_AUX
 LLM_API_BASE=$SELECTED_API_BASE
-$key_name=$API_KEY
+$auth_line
 HEARTBEAT_ENABLED=true
 HIPPOCAMPUS_ENABLED=true
 EOF
