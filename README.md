@@ -1,6 +1,6 @@
 # Lethe
 
-[![Release](https://img.shields.io/badge/release-v0.10.1-blue?style=flat-square)](https://github.com/atemerev/lethe/releases/tag/v0.10.1)
+[![Release](https://img.shields.io/badge/release-v0.10.2-blue?style=flat-square)](https://github.com/atemerev/lethe/releases/tag/v0.10.2)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Telegram](https://img.shields.io/badge/Telegram-bot-blue?style=flat-square&logo=telegram)](https://telegram.org)
@@ -43,7 +43,7 @@ Lethe uses a neuroscience-inspired actor system:
 
 | Actor | Role | Tools |
 |-------|------|-------|
-| **Brainstem** | Boot supervisor. Starts first, performs release/resource/integrity checks, receives 2h heartbeat ticks, and sends structured findings to cortex. | Registry + event bus, local integrity checks, GitHub release check, optional `update.sh` auto-update |
+| **Brainstem** | Boot supervisor. Starts first, performs release/resource/integrity checks on main heartbeat ticks, and sends structured findings to cortex. | Registry + event bus, local integrity checks, GitHub release check, optional `update.sh` auto-update |
 | **Cortex** | Principal actor and the ONLY actor that talks to the user. Hybrid execution: handles quick local tasks directly, delegates long/parallel work. | Actor orchestration, memory, Telegram, quick CLI/file work |
 | **DMN** (Default Mode Network) | Periodic background cognition (heartbeat-driven): scans goals/reminders, updates state, writes ideas/reflections, escalates meaningful insights. | File I/O, memory, search |
 | **Amygdala** | Background salience monitor: tags emotional/urgency patterns and escalates only on meaningful urgency/repeated high-salience signals. | Conversation/memory analysis, file I/O |
