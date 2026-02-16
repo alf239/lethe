@@ -1371,12 +1371,8 @@ class AsyncLLMClient:
             except Exception as e:
                 last_error = e
                 error_str = str(e).lower()
-                
-                # Check if it's a rate limit error (needs longer wait)
-                is_rate_limit = any(x in error_str for x in ["rate_limit", "rate limit", "429", "too many requests"])
-                
-                # Check if it's a transient error (shorter wait)
-                is_transient = any(x in error_str for x in ["timeout", "provider", "overloaded", "503", "502", "500"])
+                is_rate_limit = self._is_rate_limit_error(error_str)
+                is_transient = self._is_transient_error(error_str)
                 
                 if is_rate_limit:
                     # Rate limit: wait longer, up to 60 seconds
@@ -1421,8 +1417,8 @@ class AsyncLLMClient:
                 last_error = e
                 error_str = str(e).lower()
                 
-                is_rate_limit = any(x in error_str for x in ["rate_limit", "rate limit", "429", "too many requests"])
-                is_transient = any(x in error_str for x in ["timeout", "overloaded", "503", "502", "500"])
+                is_rate_limit = self._is_rate_limit_error(error_str)
+                is_transient = self._is_transient_error(error_str)
                 
                 if is_rate_limit:
                     wait_time = min(60, 15 * (attempt + 1))
@@ -1437,6 +1433,31 @@ class AsyncLLMClient:
         
         logger.error(f"OAuth call failed after {max_retries} attempts: {last_error}")
         raise last_error
+
+    @staticmethod
+    def _is_rate_limit_error(error_str: str) -> bool:
+        return any(x in error_str for x in ["rate_limit", "rate limit", "429", "too many requests"])
+
+    @staticmethod
+    def _is_transient_error(error_str: str) -> bool:
+        transient_markers = [
+            "timeout",
+            "provider",
+            "overloaded",
+            "503",
+            "502",
+            "500",
+            # Network / transport instability.
+            "ssl",
+            "tls",
+            "bad record mac",
+            "connection reset",
+            "connection aborted",
+            "network is unreachable",
+            "temporarily unavailable",
+            "eof occurred in violation of protocol",
+        ]
+        return any(x in error_str for x in transient_markers)
     
     async def _call_api(self, source: str = "") -> Dict:
         """Make API call via litellm (or OAuth if enabled)."""
