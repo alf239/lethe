@@ -12,16 +12,11 @@
 
 set -euo pipefail
 
-# Compatible shells: zsh (preferred on macOS) and bash 4+
+# Compatible shells: zsh (preferred on macOS) and bash
 if [[ -n "${ZSH_VERSION:-}" ]]; then
     :
-elif [[ -n "${BASH_VERSINFO:-}" ]]; then
-    if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
-        echo "Error: This script requires bash 4.0 or later."
-        echo "On macOS, install with: brew install bash"
-        echo "Then run: /opt/homebrew/bin/bash install.sh"
-        exit 1
-    fi
+elif [[ -n "${BASH_VERSION:-}" ]]; then
+    :
 else
     echo "Error: Unsupported shell. Run with zsh or bash."
     exit 1
@@ -48,31 +43,50 @@ INSTALL_MODE="container"
 
 # Provider defaults
 # NOTE: claude-max disabled - Anthropic blocked third-party OAuth in Jan 2026
-declare -A PROVIDERS=(
-    ["openrouter"]="OpenRouter (recommended - access to all models)"
-    ["anthropic"]="Anthropic (API key or Claude subscription token)"
-    ["openai"]="OpenAI (GPT models)"
-)
-declare -A PROVIDER_KEYS=(
-    ["openrouter"]="OPENROUTER_API_KEY"
-    ["anthropic"]="ANTHROPIC_API_KEY"
-    ["openai"]="OPENAI_API_KEY"
-)
-declare -A PROVIDER_MODELS=(
-    ["openrouter"]="openrouter/moonshotai/kimi-k2.5-0127"
-    ["anthropic"]="claude-opus-4-5-20251101"
-    ["openai"]="gpt-5.2"
-)
-declare -A PROVIDER_MODELS_AUX=(
-    ["openrouter"]="openrouter/moonshotai/kimi-k2.5-0127"
-    ["anthropic"]="claude-haiku-4-5-20251001"
-    ["openai"]="gpt-5.2-mini"
-)
-declare -A PROVIDER_URLS=(
-    ["openrouter"]="https://openrouter.ai/keys"
-    ["anthropic"]="https://console.anthropic.com/settings/keys"
-    ["openai"]="https://platform.openai.com/api-keys"
-)
+provider_desc() {
+    case "$1" in
+        openrouter) echo "OpenRouter (recommended - access to all models)" ;;
+        anthropic) echo "Anthropic (API key or Claude subscription token)" ;;
+        openai) echo "OpenAI (GPT models)" ;;
+        *) echo "" ;;
+    esac
+}
+
+provider_key_env() {
+    case "$1" in
+        openrouter) echo "OPENROUTER_API_KEY" ;;
+        anthropic) echo "ANTHROPIC_API_KEY" ;;
+        openai) echo "OPENAI_API_KEY" ;;
+        *) echo "" ;;
+    esac
+}
+
+provider_model_default() {
+    case "$1" in
+        openrouter) echo "openrouter/moonshotai/kimi-k2.5-0127" ;;
+        anthropic) echo "claude-opus-4-5-20251101" ;;
+        openai) echo "gpt-5.2" ;;
+        *) echo "" ;;
+    esac
+}
+
+provider_model_aux_default() {
+    case "$1" in
+        openrouter) echo "openrouter/moonshotai/kimi-k2.5-0127" ;;
+        anthropic) echo "claude-haiku-4-5-20251001" ;;
+        openai) echo "gpt-5.2-mini" ;;
+        *) echo "" ;;
+    esac
+}
+
+provider_key_url() {
+    case "$1" in
+        openrouter) echo "https://openrouter.ai/keys" ;;
+        anthropic) echo "https://console.anthropic.com/settings/keys" ;;
+        openai) echo "https://platform.openai.com/api-keys" ;;
+        *) echo "" ;;
+    esac
+}
 
 print_header() {
     echo -e "${BLUE}"
@@ -187,7 +201,8 @@ prompt_provider() {
     
     local i=1
     for provider in openrouter anthropic openai; do
-        local desc="${PROVIDERS[$provider]}"
+        local desc
+        desc="$(provider_desc "$provider")"
         local detected=""
         if [[ " ${DETECTED_PROVIDERS[*]} " =~ " $provider " ]]; then
             detected="${GREEN}[key found]${NC}"
@@ -218,8 +233,10 @@ prompt_provider() {
 }
 
 prompt_model() {
-    local default_model="${PROVIDER_MODELS[$SELECTED_PROVIDER]}"
-    local default_aux="${PROVIDER_MODELS_AUX[$SELECTED_PROVIDER]}"
+    local default_model
+    local default_aux
+    default_model="$(provider_model_default "$SELECTED_PROVIDER")"
+    default_aux="$(provider_model_aux_default "$SELECTED_PROVIDER")"
     
     echo ""
     echo -e "${BLUE}Main model${NC} (for conversations):"
@@ -261,8 +278,10 @@ prompt_model() {
 }
 
 prompt_api_key() {
-    local key_name="${PROVIDER_KEYS[$SELECTED_PROVIDER]}"
-    local key_url="${PROVIDER_URLS[$SELECTED_PROVIDER]}"
+    local key_name
+    local key_url
+    key_name="$(provider_key_env "$SELECTED_PROVIDER")"
+    key_url="$(provider_key_url "$SELECTED_PROVIDER")"
 
     if [[ "$SELECTED_PROVIDER" == "anthropic" ]]; then
         echo ""
@@ -535,7 +554,7 @@ clone_repo() {
 setup_config() {
     mkdir -p "$CONFIG_DIR"
     
-    local key_name="${SELECTED_AUTH_KEY_NAME:-${PROVIDER_KEYS[$SELECTED_PROVIDER]}}"
+    local key_name="${SELECTED_AUTH_KEY_NAME:-$(provider_key_env "$SELECTED_PROVIDER")}"
     local api_key_line=""
     
     # Only add API key line if not using OAuth provider
@@ -862,7 +881,7 @@ setup_container() {
     $CONTAINER_CMD build --load -t lethe:latest .
     
     # Create env file for container
-    local key_name="${SELECTED_AUTH_KEY_NAME:-${PROVIDER_KEYS[$SELECTED_PROVIDER]}}"
+    local key_name="${SELECTED_AUTH_KEY_NAME:-$(provider_key_env "$SELECTED_PROVIDER")}"
     local auth_line=""
     if [[ -n "$key_name" && -n "$API_KEY" ]]; then
         auth_line="$key_name=$API_KEY"
