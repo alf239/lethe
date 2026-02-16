@@ -57,4 +57,4 @@ ENV UV_CACHE_DIR=/workspace/.cache/uv
 
 # Entrypoint handles user creation based on HOST_UID
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["uv", "run", "lethe"]
+CMD ["uv", "run", "--no-sync", "lethe"]

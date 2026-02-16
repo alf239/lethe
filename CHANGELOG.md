@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.10.6 - 2026-02-16
+
+### Fixed
+- Container startup now uses `uv run --no-sync lethe` to avoid runtime writes to `/app/.venv` that can fail under macOS Podman/Docker UID mapping (`Permission denied` on `.venv/bin/lethe`).
+
 ## v0.10.5 - 2026-02-16
 
 ### Changed
