@@ -37,6 +37,7 @@ REPO_NAME="lethe"
 INSTALL_DIR="${LETHE_INSTALL_DIR:-$HOME/.lethe}"
 CONFIG_DIR="${LETHE_CONFIG_DIR:-$HOME/.config/lethe}"
 WORKSPACE_DIR="${LETHE_WORKSPACE_DIR:-$HOME/lethe}"
+DETECTED_PROVIDERS=()
 
 # Install mode: "container" (safe, default) or "native" (unsafe)
 INSTALL_MODE="container"
@@ -147,6 +148,17 @@ maybe_sudo() {
     fi
 }
 
+has_detected_provider() {
+    local needle="$1"
+    local p
+    for p in "${DETECTED_PROVIDERS[@]-}"; do
+        if [ "$p" = "$needle" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Detect existing API keys
 detect_api_keys() {
     DETECTED_PROVIDERS=()
@@ -157,7 +169,7 @@ detect_api_keys() {
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
         DETECTED_PROVIDERS+=("anthropic")
     fi
-    if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " anthropic " ]]; then
+    if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] && ! has_detected_provider "anthropic"; then
         DETECTED_PROVIDERS+=("anthropic")
     fi
     if [ -n "${OPENAI_API_KEY:-}" ]; then
@@ -173,16 +185,16 @@ detect_api_keys() {
         cfg_an_key="$(get_env_value "ANTHROPIC_API_KEY" "$CONFIG_DIR/.env" || true)"
         cfg_an_auth="$(get_env_value "ANTHROPIC_AUTH_TOKEN" "$CONFIG_DIR/.env" || true)"
         cfg_oa_key="$(get_env_value "OPENAI_API_KEY" "$CONFIG_DIR/.env" || true)"
-        if [ -n "${cfg_or_key:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " openrouter " ]]; then
+        if [ -n "${cfg_or_key:-}" ] && ! has_detected_provider "openrouter"; then
             DETECTED_PROVIDERS+=("openrouter")
         fi
-        if [ -n "${cfg_an_key:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " anthropic " ]]; then
+        if [ -n "${cfg_an_key:-}" ] && ! has_detected_provider "anthropic"; then
             DETECTED_PROVIDERS+=("anthropic")
         fi
-        if [ -n "${cfg_an_auth:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " anthropic " ]]; then
+        if [ -n "${cfg_an_auth:-}" ] && ! has_detected_provider "anthropic"; then
             DETECTED_PROVIDERS+=("anthropic")
         fi
-        if [ -n "${cfg_oa_key:-}" ] && [[ ! " ${DETECTED_PROVIDERS[*]} " =~ " openai " ]]; then
+        if [ -n "${cfg_oa_key:-}" ] && ! has_detected_provider "openai"; then
             DETECTED_PROVIDERS+=("openai")
         fi
     fi
@@ -204,7 +216,7 @@ prompt_provider() {
         local desc
         desc="$(provider_desc "$provider")"
         local detected=""
-        if [[ " ${DETECTED_PROVIDERS[*]} " =~ " $provider " ]]; then
+        if has_detected_provider "$provider"; then
             detected="${GREEN}[key found]${NC}"
         fi
         echo -e "  $i) $desc $detected"
@@ -213,9 +225,9 @@ prompt_provider() {
     echo ""
     
     local default_choice=1
-    if [[ " ${DETECTED_PROVIDERS[*]} " =~ " anthropic " ]]; then
+    if has_detected_provider "anthropic"; then
         default_choice=2
-    elif [[ " ${DETECTED_PROVIDERS[*]} " =~ " openai " ]]; then
+    elif has_detected_provider "openai"; then
         default_choice=3
     fi
     
