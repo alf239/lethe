@@ -1,6 +1,6 @@
 [project]
 name = "lethe"
-version = "0.10.8"
+version = "0.10.9"
 description = "Autonomous executive assistant with local memory and LLM"
 requires-python = ">=3.11"
 dependencies = [
