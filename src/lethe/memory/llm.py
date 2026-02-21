@@ -370,6 +370,23 @@ class ContextWindow:
 
         self.add_message(Message(role="user", content=content, created_at=now))
 
+    def clear_time_passed_blocks(self) -> int:
+        """Remove all synthetic idle-time markers from the timeline."""
+        kept: List[Message] = []
+        removed = 0
+        for msg in self.messages:
+            if (
+                msg.role == "user"
+                and isinstance(msg.content, str)
+                and "<time_passed_block " in msg.content
+            ):
+                removed += 1
+                continue
+            kept.append(msg)
+        if removed:
+            self.messages = kept
+        return removed
+
     def _drop_transient_if_over_budget(self):
         """Drop transient per-turn context if it would overflow the request budget.
 
@@ -1144,6 +1161,10 @@ class AsyncLLMClient:
     def note_idle_interval(self, minutes_passed: int):
         """Record idle passage of time as a single synthetic user block."""
         self.context.upsert_time_passed_block(minutes_passed)
+
+    def clear_idle_markers(self) -> int:
+        """Clear synthetic idle-time markers after user-visible activity."""
+        return self.context.clear_time_passed_blocks()
     
     def set_console_hooks(
         self,

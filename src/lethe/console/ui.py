@@ -267,8 +267,9 @@ def _iso_to_clock(value: str) -> str:
 
 class ConsoleUI:
     
-    def __init__(self, port: int = 8080):
+    def __init__(self, port: int = 8777, host: str = "127.0.0.1"):
         self.port = port
+        self.host = host
         self._last_version = 0
         self._block_counter = 0
         self._start_time = datetime.now(timezone.utc)
@@ -1032,8 +1033,9 @@ class ConsoleUI:
             self._scroll_bottom(self.ctx_scroll)
     
     def run(self):
-        logger.info(f"Starting Lethe Console on port {self.port}")
+        logger.info(f"Starting Lethe Console on {self.host}:{self.port}")
         ui.run(
+            host=self.host,
             port=self.port,
             title="Lethe Console",
             favicon="🧠",
@@ -1042,8 +1044,8 @@ class ConsoleUI:
         )
 
 
-async def run_console(port: int = 8080):
-    console = ConsoleUI(port=port)
+async def run_console(port: int = 8777, host: str = "127.0.0.1"):
+    console = ConsoleUI(port=port, host=host)
     import threading
     threading.Thread(target=console.run, daemon=True).start()
-    logger.info(f"Lethe Console started on http://localhost:{port}")
+    logger.info(f"Lethe Console started on http://{host}:{port}")

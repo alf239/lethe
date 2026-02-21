@@ -102,6 +102,16 @@ class Heartbeat:
             except asyncio.CancelledError:
                 pass
         logger.info("Heartbeat stopped")
+
+    def reset_idle_timer(self, reason: str = "activity"):
+        """Reset accumulated quiet time after user-visible activity."""
+        if self._idle_minutes_accum > 0:
+            logger.info(
+                "Heartbeat idle timer reset (%s): %d minutes -> 0",
+                reason,
+                self._idle_minutes_accum,
+            )
+        self._idle_minutes_accum = 0
     
     async def _heartbeat_loop(self):
         """Main heartbeat loop."""

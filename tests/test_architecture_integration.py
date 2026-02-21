@@ -1,7 +1,8 @@
 """Architecture-level integration tests for actor/runtime behavior."""
 
 import asyncio
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock
@@ -10,6 +11,7 @@ from lethe.actor import ActorConfig, ActorRegistry
 from lethe.actor.brainstem import Brainstem
 from lethe.actor.integration import ActorSystem
 from lethe.config import Settings
+from lethe.heartbeat import Heartbeat
 from lethe.memory.llm import AsyncLLMClient, ContextWindow, LLMConfig, Message
 
 
@@ -151,6 +153,54 @@ def test_idle_time_passed_marker_is_single_upsert(monkeypatch):
     assert 'minutes="30"' in markers[0].content
 
 
+def test_idle_time_passed_markers_can_be_cleared(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    config = LLMConfig(model="openrouter/moonshotai/kimi-k2.5-0127")
+    context = ContextWindow(system_prompt="sys", memory_context="", config=config)
+
+    context.upsert_time_passed_block(360)
+    context.add_message(Message(role="user", content="hi"))
+    context.add_message(Message(role="assistant", content="hello"))
+
+    removed = context.clear_time_passed_blocks()
+    markers = [
+        m for m in context.messages
+        if m.role == "user" and isinstance(m.content, str) and "<time_passed_block " in m.content
+    ]
+    assert removed == 1
+    assert len(markers) == 0
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_idle_accumulator_resets_on_activity():
+    idle_minutes = []
+
+    async def process_callback(_: str) -> str:
+        return "ok"
+
+    async def send_callback(_: str):
+        return None
+
+    async def idle_callback(minutes: int):
+        idle_minutes.append(minutes)
+
+    heartbeat = Heartbeat(
+        process_callback=process_callback,
+        send_callback=send_callback,
+        idle_callback=idle_callback,
+        interval=15 * 60,
+    )
+
+    await heartbeat._send_heartbeat()  # First tick does not emit idle callback.
+    await heartbeat._send_heartbeat()
+    assert idle_minutes == [15]
+
+    heartbeat.reset_idle_timer("test activity")
+
+    await heartbeat._send_heartbeat()
+    assert idle_minutes == [15, 15]
+
+
 def test_transient_context_dropped_when_over_budget(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     config = LLMConfig(
@@ -208,6 +258,8 @@ async def test_llm_circuit_breaker_forces_final_response(monkeypatch):
 @pytest.mark.asyncio
 async def test_principal_monitor_keeps_done_and_failed_updates_in_cortex(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "1")
 
     class DummyLLM:
         def __init__(self):
@@ -241,7 +293,7 @@ async def test_principal_monitor_keeps_done_and_failed_updates_in_cortex(monkeyp
     await asyncio.sleep(1.2)
     send_to_user.assert_not_awaited()
     first_msg = None
-    for _ in range(5):
+    for _ in range(20):
         msg = await principal.wait_for_reply(timeout=0.2)
         if msg and msg.metadata.get("kind") == "done":
             first_msg = msg
@@ -258,7 +310,7 @@ async def test_principal_monitor_keeps_done_and_failed_updates_in_cortex(monkeyp
     await asyncio.sleep(1.2)
     send_to_user.assert_not_awaited()
     second_msg = None
-    for _ in range(5):
+    for _ in range(20):
         msg = await principal.wait_for_reply(timeout=0.2)
         if msg and msg.metadata.get("kind") == "failed":
             second_msg = msg
@@ -271,8 +323,10 @@ async def test_principal_monitor_keeps_done_and_failed_updates_in_cortex(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_brainstem_user_notify_is_deferred_to_cortex(monkeypatch):
+async def test_brainstem_user_notify_is_cortex_gated(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "1")
 
     class DummyLLM:
         def __init__(self):
@@ -294,7 +348,16 @@ async def test_brainstem_user_notify_is_deferred_to_cortex(monkeypatch):
     actor_system = ActorSystem(agent)
     await actor_system.setup()
     send_to_user = AsyncMock()
-    actor_system.set_callbacks(send_to_user=send_to_user)
+    seen = {"important": 0}
+
+    async def _decide(from_actor_name: str, text: str, metadata: dict):
+        if from_actor_name == "brainstem" and text == "Important insight":
+            seen["important"] += 1
+            return "Important insight" if seen["important"] == 1 else None
+        return None
+
+    decide_user_notify = AsyncMock(side_effect=_decide)
+    actor_system.set_callbacks(send_to_user=send_to_user, decide_user_notify=decide_user_notify)
 
     principal = actor_system.principal
     brainstem_actor = actor_system.registry.spawn(
@@ -308,8 +371,14 @@ async def test_brainstem_user_notify_is_deferred_to_cortex(monkeypatch):
         metadata={"channel": "user_notify", "kind": "insight"},
     )
     await asyncio.sleep(1.2)
-    send_to_user.assert_not_awaited()
-    events = actor_system.registry.events.query(event_type="background_notify_deferred_to_cortex", actor_id=principal.id)
+    assert any(
+        call.args and call.args[0] == "Important insight"
+        for call in send_to_user.await_args_list
+    )
+    events = actor_system.registry.events.query(
+        event_type="background_notify_relayed_to_user",
+        actor_id=principal.id,
+    )
     assert events
     assert events[-1].payload.get("from_actor_name") == "brainstem"
 
@@ -319,14 +388,27 @@ async def test_brainstem_user_notify_is_deferred_to_cortex(monkeypatch):
         metadata={"channel": "user_notify", "kind": "insight"},
     )
     await asyncio.sleep(1.2)
-    send_to_user.assert_not_awaited()
+    assert seen["important"] >= 2
+    relay_matches = [
+        call for call in send_to_user.await_args_list
+        if call.args and call.args[0] == "Important insight"
+    ]
+    assert len(relay_matches) == 1
+    dropped = actor_system.registry.events.query(
+        event_type="background_notify_dropped_by_cortex",
+        actor_id=principal.id,
+    )
+    assert dropped
+    assert dropped[-1].payload.get("from_actor_name") == "brainstem"
 
     await actor_system.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_dmn_user_notify_is_deferred_to_cortex(monkeypatch):
+async def test_dmn_user_notify_is_cortex_gated(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "1")
 
     class DummyLLM:
         def __init__(self):
@@ -348,7 +430,14 @@ async def test_dmn_user_notify_is_deferred_to_cortex(monkeypatch):
     actor_system = ActorSystem(agent)
     await actor_system.setup()
     send_to_user = AsyncMock()
-    actor_system.set_callbacks(send_to_user=send_to_user)
+
+    async def _decide(from_actor_name: str, text: str, metadata: dict):
+        if from_actor_name == "dmn" and text == "Urgent deadline tomorrow":
+            return "Urgent deadline tomorrow"
+        return None
+
+    decide_user_notify = AsyncMock(side_effect=_decide)
+    actor_system.set_callbacks(send_to_user=send_to_user, decide_user_notify=decide_user_notify)
 
     principal = actor_system.principal
     dmn_actor = actor_system.registry.spawn(
@@ -363,8 +452,18 @@ async def test_dmn_user_notify_is_deferred_to_cortex(monkeypatch):
     )
     await asyncio.sleep(1.2)
 
-    send_to_user.assert_not_awaited()
-    events = actor_system.registry.events.query(event_type="background_notify_deferred_to_cortex", actor_id=principal.id)
+    assert any(
+        call.args and call.args[0] == "Urgent deadline tomorrow"
+        for call in send_to_user.await_args_list
+    )
+    assert any(
+        call.args and call.args[0] == "dmn" and call.args[1] == "Urgent deadline tomorrow"
+        for call in decide_user_notify.await_args_list
+    )
+    events = actor_system.registry.events.query(
+        event_type="background_notify_relayed_to_user",
+        actor_id=principal.id,
+    )
     assert events
     assert events[-1].payload.get("from_actor_name") == "dmn"
 
@@ -375,6 +474,8 @@ async def test_dmn_user_notify_is_deferred_to_cortex(monkeypatch):
 async def test_brainstem_starts_first_and_is_online(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("BRAINSTEM_RELEASE_CHECK_ENABLED", "false")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "1")
 
     class DummyLLM:
         def __init__(self):
@@ -401,6 +502,70 @@ async def test_brainstem_starts_first_and_is_online(monkeypatch):
     assert any(a.get("name") == "brainstem" for a in status.get("actors", []))
 
     await actor_system.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_brainstem_startup_detects_restart_and_emits_user_notify(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("BRAINSTEM_RELEASE_CHECK_ENABLED", "false")
+    monkeypatch.setenv("BRAINSTEM_INTEGRITY_CHECK_ENABLED", "false")
+    monkeypatch.setenv("BRAINSTEM_RESOURCE_CHECK_ENABLED", "false")
+
+    workspace = tmp_path / "workspace"
+    memory = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    db_parent = tmp_path / "data"
+    workspace.mkdir()
+    memory.mkdir()
+    config_dir.mkdir()
+    db_parent.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test-token",
+        telegram_allowed_user_ids="1",
+        workspace_dir=workspace,
+        memory_dir=memory,
+        lethe_config_dir=config_dir,
+        db_path=db_parent / "lethe.db",
+    )
+
+    previous_started = datetime.now(timezone.utc) - timedelta(hours=2)
+    previous_seen = datetime.now(timezone.utc) - timedelta(minutes=3)
+    runtime_state = {
+        "session_id": "prev-session",
+        "started_at": previous_started.isoformat(),
+        "last_seen_at": previous_seen.isoformat(),
+        "pid": 4242,
+        "version": "0.9.9",
+        "clean_shutdown": False,
+        "shutdown_at": "",
+    }
+    runtime_state_path = memory / "brainstem_runtime_state.json"
+    runtime_state_path.write_text(json.dumps(runtime_state), encoding="utf-8")
+
+    registry = ActorRegistry()
+    cortex = registry.spawn(ActorConfig(name="cortex", group="main", goals="serve"), is_principal=True)
+    brainstem = Brainstem(
+        registry=registry,
+        settings=settings,
+        cortex_id=cortex.id,
+        install_dir=str(tmp_path),
+    )
+
+    await brainstem.startup()
+
+    restart_notify = None
+    for _ in range(20):
+        msg = await cortex.wait_for_reply(timeout=0.2)
+        if not msg:
+            continue
+        if msg.metadata.get("channel") == "user_notify" and msg.metadata.get("kind") == "brainstem_restart":
+            restart_notify = msg
+            break
+
+    assert restart_notify is not None
+    assert "restarted" in (restart_notify.content or "").lower()
+    assert "downtime" in (restart_notify.content or "").lower()
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,12 @@
 """Main entry point for Lethe."""
 
 import asyncio
+import json
 import logging
 import os
 import signal
 import sys
+from typing import Optional
 
 # Load .env file before anything else
 from dotenv import load_dotenv
@@ -77,12 +79,13 @@ async def run():
 
     # Initialize console (mind state visualization) if enabled
     console_enabled = os.environ.get("LETHE_CONSOLE", "false").lower() == "true"
-    console_port = int(os.environ.get("LETHE_CONSOLE_PORT", 8080))
-    
+    console_port = int(os.environ.get("LETHE_CONSOLE_PORT", 8777))
+    console_host = os.environ.get("LETHE_CONSOLE_HOST", "127.0.0.1")
+
     if console_enabled:
         from lethe.console.ui import run_console
-        await run_console(port=console_port)
-        console.print(f"[cyan]Console[/cyan] running at http://localhost:{console_port}")
+        await run_console(port=console_port, host=console_host)
+        console.print(f"[cyan]Console[/cyan] running at http://{console_host}:{console_port}")
         
         # Initialize console state with current data
         lethe_console.update_stats(stats['total_messages'], stats['archival_memories'])
@@ -121,6 +124,15 @@ async def run():
     # Initialize conversation manager
     conversation_manager = ConversationManager(debounce_seconds=settings.debounce_seconds)
     logger.info(f"Conversation manager initialized (debounce: {settings.debounce_seconds}s)")
+    heartbeat: Optional[Heartbeat] = None
+
+    def mark_user_visible_activity(reason: str) -> None:
+        """Reset synthetic idle state after real user-visible activity."""
+        removed = agent.llm.clear_idle_markers()
+        if removed:
+            logger.info("Cleared %d idle marker(s) after %s", removed, reason)
+        if heartbeat:
+            heartbeat.reset_idle_timer(reason)
 
     # Message processing callback
     async def process_message(chat_id: int, user_id: int, message: str, metadata: dict, interrupt_check):
@@ -128,6 +140,7 @@ async def run():
         from lethe.tools import set_telegram_context, set_last_message_id, clear_telegram_context
         
         logger.info(f"Processing message from {user_id}: {message[:50]}...")
+        mark_user_visible_activity("incoming user message")
         
         # Set telegram context for tools (reactions, sending messages)
         set_telegram_context(telegram_bot.bot, chat_id)
@@ -148,6 +161,7 @@ async def run():
                     return
                 # Send thinking/reasoning as-is (no emoji prefix)
                 await telegram_bot.send_message(chat_id, content)
+                mark_user_visible_activity("intermediate assistant update")
             
             # Callback for image attachments (screenshots, etc.)
             async def on_image(image_path: str):
@@ -155,6 +169,7 @@ async def run():
                 if interrupt_check():
                     return
                 await telegram_bot.send_photo(chat_id, image_path)
+                mark_user_visible_activity("assistant image update")
             
             # Get response from agent
             response = await agent.chat(message, on_message=on_intermediate, on_image=on_image)
@@ -167,10 +182,12 @@ async def run():
             # Send response
             logger.info(f"Sending response ({len(response)} chars): {response[:80]}...")
             await telegram_bot.send_message(chat_id, response)
+            mark_user_visible_activity("assistant final response")
             
         except Exception as e:
             logger.exception(f"Error processing message: {e}")
             await telegram_bot.send_message(chat_id, f"Error: {e}")
+            mark_user_visible_activity("assistant error response")
         finally:
             await telegram_bot.stop_typing(chat_id)
             clear_telegram_context()
@@ -211,6 +228,7 @@ async def run():
         """Send heartbeat response to user."""
         if heartbeat_chat_id:
             await telegram_bot.send_message(heartbeat_chat_id, response)
+            mark_user_visible_activity("proactive outbound message")
     
     async def heartbeat_summarize(prompt: str) -> str:
         """Summarize/evaluate heartbeat response before sending (uses aux model)."""
@@ -219,6 +237,37 @@ async def run():
     async def heartbeat_idle(minutes_passed: int):
         """Record idle passage-of-time as a single user-role timeline block."""
         agent.llm.note_idle_interval(minutes_passed)
+
+    def parse_notify_decision(raw: str) -> tuple[bool, str]:
+        """Parse cortex notify decision JSON."""
+        text = (raw or "").strip()
+        if not text:
+            return False, ""
+        data = None
+        try:
+            data = json.loads(text)
+        except Exception:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return False, ""
+            try:
+                data = json.loads(text[start:end + 1])
+            except Exception:
+                return False, ""
+        if not isinstance(data, dict):
+            return False, ""
+        relay_raw = data.get("relay", False)
+        if isinstance(relay_raw, bool):
+            relay = relay_raw
+        elif isinstance(relay_raw, str):
+            relay = relay_raw.strip().lower() in {"true", "1", "yes", "y"}
+        else:
+            relay = bool(relay_raw)
+        message = str(data.get("message", "")).strip()
+        if not relay or not message:
+            return False, ""
+        return True, message
     
     async def get_active_reminders() -> str:
         """Get active reminders as formatted string."""
@@ -237,6 +286,36 @@ async def run():
             lines.append(f"- [{priority}] {todo['title']}{due_str}")
         
         return "\n".join(lines)
+
+    async def decide_user_notify(from_actor_name: str, notify_text: str, metadata: dict) -> Optional[str]:
+        """Ask cortex whether to relay a background notification to the user."""
+        if not actor_system or not actor_system.principal:
+            return None
+        principal = actor_system.principal
+        principal_context = principal.build_system_prompt()
+        kind = str((metadata or {}).get("kind", "")).strip() or "unspecified"
+        recent_signals = actor_system._get_recent_user_signals()
+        prompt = (
+            "You are Cortex, the ONLY actor allowed to message the user.\n"
+            "A background actor requested escalation. Decide if this should be relayed now.\n\n"
+            f"Source actor: {from_actor_name}\n"
+            f"Signal kind: {kind}\n"
+            f"Signal text: {notify_text[:1200]}\n\n"
+            "Recent user signals:\n"
+            f"{recent_signals[:1500]}\n\n"
+            "Cortex runtime prompt snapshot:\n"
+            f"{principal_context[:5000]}\n\n"
+            "Respond with strict JSON only:\n"
+            '{"relay": true|false, "message": "text for user when relay=true, else empty"}\n'
+            "If uncertain, choose the option that best serves the user right now."
+        )
+        try:
+            raw = await agent.llm.complete(prompt, use_aux=False, usage_tag="cortex_notify_decision")
+        except Exception as e:
+            logger.warning("Cortex notify decision call failed: %s", e)
+            return None
+        relay, message = parse_notify_decision(raw)
+        return message if relay else None
     
     heartbeat = Heartbeat(
         process_callback=heartbeat_process,
@@ -261,6 +340,7 @@ async def run():
         actor_system.set_callbacks(
             send_to_user=heartbeat_send,
             get_reminders=get_active_reminders,
+            decide_user_notify=decide_user_notify,
         )
 
     # Console monitoring pump for dynamic runtime subsystems.
