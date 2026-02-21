@@ -441,6 +441,11 @@ class ActorSystem:
     async def shutdown(self):
         """Shut down all actors gracefully."""
         logger.info(f"Shutting down actor system ({self.registry.active_count} active actors)")
+        if self.brainstem:
+            try:
+                self.brainstem.record_shutdown()
+            except Exception as e:
+                logger.debug("Brainstem shutdown marker failed: %s", e)
         if self._principal_monitor_task and not self._principal_monitor_task.done():
             self._principal_monitor_task.cancel()
             try:

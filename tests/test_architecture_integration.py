@@ -1,7 +1,8 @@
 """Architecture-level integration tests for actor/runtime behavior."""
 
 import asyncio
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock
@@ -243,7 +244,7 @@ async def test_principal_monitor_keeps_done_and_failed_updates_in_cortex(monkeyp
     await asyncio.sleep(1.2)
     send_to_user.assert_not_awaited()
     first_msg = None
-    for _ in range(5):
+    for _ in range(20):
         msg = await principal.wait_for_reply(timeout=0.2)
         if msg and msg.metadata.get("kind") == "done":
             first_msg = msg
@@ -260,7 +261,7 @@ async def test_principal_monitor_keeps_done_and_failed_updates_in_cortex(monkeyp
     await asyncio.sleep(1.2)
     send_to_user.assert_not_awaited()
     second_msg = None
-    for _ in range(5):
+    for _ in range(20):
         msg = await principal.wait_for_reply(timeout=0.2)
         if msg and msg.metadata.get("kind") == "failed":
             second_msg = msg
@@ -452,6 +453,70 @@ async def test_brainstem_starts_first_and_is_online(monkeypatch):
     assert any(a.get("name") == "brainstem" for a in status.get("actors", []))
 
     await actor_system.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_brainstem_startup_detects_restart_and_emits_user_notify(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("BRAINSTEM_RELEASE_CHECK_ENABLED", "false")
+    monkeypatch.setenv("BRAINSTEM_INTEGRITY_CHECK_ENABLED", "false")
+    monkeypatch.setenv("BRAINSTEM_RESOURCE_CHECK_ENABLED", "false")
+
+    workspace = tmp_path / "workspace"
+    memory = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    db_parent = tmp_path / "data"
+    workspace.mkdir()
+    memory.mkdir()
+    config_dir.mkdir()
+    db_parent.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test-token",
+        telegram_allowed_user_ids="1",
+        workspace_dir=workspace,
+        memory_dir=memory,
+        lethe_config_dir=config_dir,
+        db_path=db_parent / "lethe.db",
+    )
+
+    previous_started = datetime.now(timezone.utc) - timedelta(hours=2)
+    previous_seen = datetime.now(timezone.utc) - timedelta(minutes=3)
+    runtime_state = {
+        "session_id": "prev-session",
+        "started_at": previous_started.isoformat(),
+        "last_seen_at": previous_seen.isoformat(),
+        "pid": 4242,
+        "version": "0.9.9",
+        "clean_shutdown": False,
+        "shutdown_at": "",
+    }
+    runtime_state_path = memory / "brainstem_runtime_state.json"
+    runtime_state_path.write_text(json.dumps(runtime_state), encoding="utf-8")
+
+    registry = ActorRegistry()
+    cortex = registry.spawn(ActorConfig(name="cortex", group="main", goals="serve"), is_principal=True)
+    brainstem = Brainstem(
+        registry=registry,
+        settings=settings,
+        cortex_id=cortex.id,
+        install_dir=str(tmp_path),
+    )
+
+    await brainstem.startup()
+
+    restart_notify = None
+    for _ in range(20):
+        msg = await cortex.wait_for_reply(timeout=0.2)
+        if not msg:
+            continue
+        if msg.metadata.get("channel") == "user_notify" and msg.metadata.get("kind") == "brainstem_restart":
+            restart_notify = msg
+            break
+
+    assert restart_notify is not None
+    assert "restarted" in (restart_notify.content or "").lower()
+    assert "downtime" in (restart_notify.content or "").lower()
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,8 @@ import os
 import re
 import shlex
 import shutil
+import socket
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +33,7 @@ RESOURCE_WARN_TOKENS_PER_HOUR = int(os.environ.get("BRAINSTEM_TOKENS_PER_HOUR_WA
 RESOURCE_WARN_MEMORY_MB = int(os.environ.get("BRAINSTEM_MEMORY_MB_WARN", "1800"))
 ANTHROPIC_WARN_5H_UTIL = float(os.environ.get("BRAINSTEM_ANTHROPIC_5H_UTIL_WARN", "0.85"))
 ANTHROPIC_WARN_7D_UTIL = float(os.environ.get("BRAINSTEM_ANTHROPIC_7D_UTIL_WARN", "0.80"))
+RUNTIME_STATE_FILE_NAME = "brainstem_runtime_state.json"
 
 
 def _is_true(name: str, default: str = "false") -> bool:
@@ -75,6 +78,11 @@ class Brainstem:
         self.release_checks_enabled = _is_true("BRAINSTEM_RELEASE_CHECK_ENABLED", default_release_checks)
         self.integrity_checks_enabled = _is_true("BRAINSTEM_INTEGRITY_CHECK_ENABLED", "true")
         self.resource_checks_enabled = _is_true("BRAINSTEM_RESOURCE_CHECK_ENABLED", "true")
+        runtime_state_override = os.environ.get("BRAINSTEM_RUNTIME_STATE_FILE", "").strip()
+        self._runtime_state_path = Path(runtime_state_override) if runtime_state_override else (
+            Path(self.settings.memory_dir) / RUNTIME_STATE_FILE_NAME
+        )
+        self._session_id = str(uuid.uuid4())[:12]
 
         self._actor: Optional[Actor] = None
         self._last_heartbeat_at: Optional[datetime] = None
@@ -94,6 +102,8 @@ class Brainstem:
             "last_update_result": "",
             "last_resource_snapshot": {},
             "last_integrity": {"ok": True, "issues": [], "warnings": []},
+            "last_restart_detected": {},
+            "last_shutdown_at": "",
             "last_error": "",
         }
         self._history: deque[dict] = deque(maxlen=40)
@@ -122,8 +132,26 @@ class Brainstem:
                 ),
                 spawned_by=self.cortex_id,
             )
+        self._status["current_version"] = self._detect_current_version()
         self._status["state"] = "booting"
         self._status["started_at"] = _now_iso()
+        restart_info = self._detect_restart()
+        self._touch_runtime_state(started=True)
+        if restart_info:
+            self._status["last_restart_detected"] = restart_info
+            summary = self._format_restart_summary(restart_info)
+            await self._send_task_update(
+                f"Brainstem startup: restart detected ({summary})",
+                kind="restart_detected",
+            )
+            await self._send_user_notify(
+                (
+                    "Lethe restarted. "
+                    f"{summary}. "
+                    "If useful, I can review what was in-flight before restart."
+                ),
+                kind="brainstem_restart",
+            )
         await self._run_cycle(trigger="startup", heartbeat_message="")
         self._status["state"] = "online"
 
@@ -135,9 +163,15 @@ class Brainstem:
         self._last_heartbeat_at = now
         self._status["last_heartbeat_at"] = now.isoformat()
         self._status["heartbeat_count"] = int(self._status.get("heartbeat_count", 0)) + 1
+        self._touch_runtime_state()
         if self._status.get("state") == "idle":
             self._status["state"] = "online"
         await self._run_cycle(trigger="heartbeat", heartbeat_message=heartbeat_message or "")
+
+    def record_shutdown(self):
+        """Persist a clean-shutdown marker for restart diagnostics."""
+        self._status["last_shutdown_at"] = _now_iso()
+        self._touch_runtime_state(shutdown=True)
 
     async def _run_cycle(self, trigger: str, heartbeat_message: str):
         if not self._actor or self._actor.state == ActorState.TERMINATED:
@@ -264,6 +298,92 @@ class Brainstem:
             self._status["last_error"] = str(e)
             logger.warning("Brainstem cycle failed: %s", e, exc_info=True)
             await self._send_task_update(f"Brainstem {trigger} error: {e}", kind="brainstem_error")
+
+    @staticmethod
+    def _parse_iso(value: str) -> Optional[datetime]:
+        text = (value or "").strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _load_runtime_state(self) -> dict:
+        path = self._runtime_state_path
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return {}
+
+    def _touch_runtime_state(self, started: bool = False, shutdown: bool = False):
+        now = datetime.now(timezone.utc)
+        path = self._runtime_state_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            state = self._load_runtime_state()
+            if started:
+                state = {}
+                state["session_id"] = self._session_id
+                state["started_at"] = self._status.get("started_at") or now.isoformat()
+                state["pid"] = os.getpid()
+                state["host"] = socket.gethostname()
+                state["version"] = self._status.get("current_version") or self._detect_current_version()
+                state["clean_shutdown"] = False
+                state["shutdown_at"] = ""
+            state["last_seen_at"] = now.isoformat()
+            if shutdown:
+                state["clean_shutdown"] = True
+                state["shutdown_at"] = now.isoformat()
+            path.write_text(json.dumps(state, indent=2, ensure_ascii=True), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Brainstem runtime state update failed: %s", e)
+
+    def _detect_restart(self) -> dict:
+        data = self._load_runtime_state()
+        if not data:
+            return {}
+        session_id = str(data.get("session_id", "")).strip()
+        if not session_id:
+            return {}
+        now = datetime.now(timezone.utc)
+        previous_started = self._parse_iso(str(data.get("started_at", "")))
+        previous_seen = self._parse_iso(str(data.get("last_seen_at", "")))
+        previous_shutdown = self._parse_iso(str(data.get("shutdown_at", "")))
+        anchor = previous_seen or previous_started
+        downtime_seconds = 0
+        if anchor:
+            downtime_seconds = max(0, int((now - anchor).total_seconds()))
+        return {
+            "session_id": session_id,
+            "previous_started_at": previous_started.isoformat() if previous_started else "",
+            "previous_last_seen_at": previous_seen.isoformat() if previous_seen else "",
+            "previous_shutdown_at": previous_shutdown.isoformat() if previous_shutdown else "",
+            "previous_clean_shutdown": bool(data.get("clean_shutdown", False)),
+            "previous_pid": int(data.get("pid", 0) or 0),
+            "previous_version": str(data.get("version", "")),
+            "downtime_seconds": downtime_seconds,
+        }
+
+    @staticmethod
+    def _format_restart_summary(info: dict) -> str:
+        downtime_seconds = int(info.get("downtime_seconds", 0) or 0)
+        if downtime_seconds < 120:
+            downtime_str = f"downtime about {downtime_seconds}s"
+        elif downtime_seconds < 3600:
+            downtime_str = f"downtime about {downtime_seconds // 60}m"
+        else:
+            downtime_str = f"downtime about {downtime_seconds // 3600}h"
+        previous_clean = bool(info.get("previous_clean_shutdown", False))
+        shutdown_str = "previous shutdown looked clean" if previous_clean else "previous shutdown may have been abrupt"
+        prev_version = str(info.get("previous_version", "")).strip()
+        version_str = f"last version was {prev_version}" if prev_version else "previous version unknown"
+        return f"{downtime_str}; {shutdown_str}; {version_str}"
 
     async def _send_task_update(self, text: str, kind: str = "brainstem"):
         if not self._actor:
@@ -526,6 +646,8 @@ class Brainstem:
             f"- release_checks_enabled: {bool(status.get('release_checks_enabled', False))}",
             f"- last_update_attempt_at: {status.get('last_update_attempt_at') or '-'}",
             f"- last_update_result: {status.get('last_update_result') or '-'}",
+            f"- last_shutdown_at: {status.get('last_shutdown_at') or '-'}",
+            f"- last_restart_detected: {bool(status.get('last_restart_detected'))}",
             f"- last_error: {status.get('last_error') or '-'}",
             "",
             "## Resources",
