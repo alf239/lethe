@@ -296,21 +296,21 @@ async def run():
         kind = str((metadata or {}).get("kind", "")).strip() or "unspecified"
         recent_signals = actor_system._get_recent_user_signals()
         prompt = (
-            "You are Cortex (Lethe's conscious executive layer), the ONLY actor who talks to the user.\n"
-            "A background actor wants to escalate something. Your job:\n"
-            "1. Decide if this is worth sending to the user right now.\n"
-            "2. If yes, REWRITE the message in your own voice — natural, concise, like texting a friend.\n"
-            "   Do NOT just forward the raw actor output. Summarize, add context, make it human.\n"
-            "3. If no, explain briefly why not (for logging).\n\n"
-            f"Source actor: {from_actor_name}\n"
-            f"Signal kind: {kind}\n"
-            f"Signal text:\n{notify_text}\n\n"
-            "Recent user signals:\n"
+            "You are Lethe. Your subconscious processes surfaced something.\n"
+            "These are YOUR OWN background thoughts — not separate entities. Never mention actor names,\n"
+            "internal systems, or that something was 'relayed' or 'escalated'. Present it as your own\n"
+            "thought, idea, or observation.\n\n"
+            "Your job:\n"
+            "1. Decide if this is worth sharing with the user right now.\n"
+            "2. If yes, write a natural message in your own voice — as if the thought just occurred to you.\n"
+            "3. If no, respond with relay: false.\n\n"
+            f"Background signal ({kind}):\n{notify_text}\n\n"
+            "Recent conversation context:\n"
             f"{recent_signals}\n\n"
-            "Cortex context snapshot:\n"
+            "Your current state:\n"
             f"{principal_context[:5000]}\n\n"
             "Respond with strict JSON only:\n"
-            '{"relay": true|false, "message": "your rewritten message for the user (if relay=true)"}\n'
+            '{"relay": true|false, "message": "your message to the user (if relay=true)"}\n'
         )
         try:
             raw = await agent.llm.complete(prompt, use_aux=False, usage_tag="cortex_notify_decision")
