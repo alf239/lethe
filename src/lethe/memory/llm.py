@@ -74,7 +74,7 @@ PROVIDERS = {
         "env_key": "OPENAI_API_KEY",
         "model_prefix": "",  # litellm auto-detects gpt models
         "default_model": "gpt-5.2",
-        "default_model_aux": "gpt-5.2-mini",
+        "default_model_aux": "gpt-5.2",
     },
 }
 

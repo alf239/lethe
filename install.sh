@@ -76,7 +76,7 @@ provider_model_aux_default() {
     case "$1" in
         openrouter) echo "openrouter/moonshotai/kimi-k2.5-0127" ;;
         anthropic) echo "claude-haiku-4-5-20251001" ;;
-        openai) echo "gpt-5.2-mini" ;;
+        openai) echo "gpt-5.2" ;;
         *) echo "" ;;
     esac
 }
