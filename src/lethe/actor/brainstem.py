@@ -24,6 +24,7 @@ from urllib import request
 from lethe import __version__
 from lethe.actor import Actor, ActorConfig, ActorRegistry, ActorState
 from lethe.config import Settings
+from lethe.memory.openai_oauth import is_oauth_available_openai
 
 logger = logging.getLogger(__name__)
 
@@ -587,17 +588,9 @@ class Brainstem:
         except Exception:
             pass
 
-        openai_oauth_available = False
-        try:
-            from lethe.memory.openai_oauth import is_oauth_available_openai
-
-            openai_oauth_available = is_oauth_available_openai()
-        except Exception:
-            openai_oauth_available = False
-
         if os.environ.get("ANTHROPIC_AUTH_TOKEN"):
             data["auth_mode"] = "subscription_oauth"
-        elif openai_oauth_available:
+        elif is_oauth_available_openai():
             data["auth_mode"] = "openai_subscription_oauth"
         elif os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
             data["auth_mode"] = "api_key_credits"
