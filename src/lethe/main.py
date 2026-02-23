@@ -224,10 +224,42 @@ async def run():
             return result or "ok"
         return await agent.chat(message, use_hippocampus=False)
     
+    # --- Proactive message rate limiter (hard enforcement) ---
+    _proactive_sends: list[float] = []  # timestamps of proactive messages sent
+    _proactive_max = settings.proactive_max_per_day
+    _proactive_cooldown = settings.proactive_cooldown_minutes * 60  # seconds
+
+    def _proactive_allowed() -> bool:
+        """Check if a proactive message is allowed right now."""
+        import time
+        now = time.time()
+        # Prune old entries (older than 24h)
+        while _proactive_sends and (now - _proactive_sends[0]) > 86400:
+            _proactive_sends.pop(0)
+        # Check daily budget
+        if _proactive_max > 0 and len(_proactive_sends) >= _proactive_max:
+            logger.info("Proactive message blocked: daily limit (%d/%d)", len(_proactive_sends), _proactive_max)
+            return False
+        # Check cooldown
+        if _proactive_sends and (now - _proactive_sends[-1]) < _proactive_cooldown:
+            remaining = int(_proactive_cooldown - (now - _proactive_sends[-1]))
+            logger.info("Proactive message blocked: cooldown (%d seconds remaining)", remaining)
+            return False
+        return True
+
+    def _proactive_record():
+        """Record that a proactive message was sent."""
+        import time
+        _proactive_sends.append(time.time())
+
     async def heartbeat_send(response: str):
-        """Send heartbeat response to user."""
+        """Send heartbeat response to user (rate-limited)."""
         if heartbeat_chat_id:
+            if not _proactive_allowed():
+                logger.info("Heartbeat message suppressed by rate limiter")
+                return
             await telegram_bot.send_message(heartbeat_chat_id, response)
+            _proactive_record()
             mark_user_visible_activity("proactive outbound message")
     
     async def heartbeat_summarize(prompt: str) -> str:
@@ -291,6 +323,10 @@ async def run():
         """Ask cortex whether to relay a background notification to the user."""
         if not actor_system or not actor_system.principal:
             return None
+        # Hard rate limit — skip LLM call entirely if budget exhausted
+        if not _proactive_allowed():
+            logger.info("Notify decision skipped: proactive rate limit reached")
+            return None
         principal = actor_system.principal
         principal_context = principal.build_system_prompt()
         kind = str((metadata or {}).get("kind", "")).strip() or "unspecified"
@@ -318,6 +354,8 @@ async def run():
             logger.warning("Cortex notify decision call failed: %s", e)
             return None
         relay, message = parse_notify_decision(raw)
+        if relay and message:
+            _proactive_record()
         return message if relay else None
     
     heartbeat = Heartbeat(

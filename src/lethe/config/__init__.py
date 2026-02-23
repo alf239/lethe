@@ -85,6 +85,16 @@ class Settings(BaseSettings):
         description="Enable Amygdala emotional salience actor (heartbeat-triggered, aux model)",
     )
 
+    # Proactive messaging limits (hard enforcement, not prompt-dependent)
+    proactive_max_per_day: int = Field(
+        default=4,
+        description="Maximum proactive messages to user per calendar day (0 = disabled)",
+    )
+    proactive_cooldown_minutes: int = Field(
+        default=60,
+        description="Minimum minutes between proactive messages",
+    )
+
 
 _settings: Optional[Settings] = None
 
