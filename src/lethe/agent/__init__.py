@@ -493,6 +493,80 @@ class Agent:
         """Add a custom tool function."""
         self.llm.add_tool(func)
     
+    @staticmethod
+    def _fmt_reset(unix_ts: int) -> str:
+        """Format a Unix timestamp as a human-readable time-until-reset string."""
+        import time
+        delta = int(unix_ts - time.time())
+        if delta <= 0:
+            return "now"
+        h, rem = divmod(delta, 3600)
+        m = rem // 60
+        if h >= 24:
+            d = h // 24
+            return f"{d}d {h % 24}h"
+        if h:
+            return f"{h}h {m}m"
+        return f"{m}m"
+
+    def _build_quota_block(self) -> str:
+        """Build subscription quota XML block from latest Anthropic ratelimit snapshot."""
+        try:
+            from lethe.console import get_state
+            state = get_state()
+            snapshot = dict(getattr(state, "anthropic_ratelimit", {}) or {})
+        except Exception:
+            return ""
+        if not snapshot:
+            return ""
+
+        captured_at = snapshot.get("captured_at", "")
+        unified_status = snapshot.get("unified_status", "")
+        five = snapshot.get("five_hour", {}) or {}
+        seven = snapshot.get("seven_day", {}) or {}
+
+        lines = []
+        if unified_status:
+            lines.append(f"status: {unified_status}")
+
+        five_util = five.get("utilization")
+        five_reset = five.get("reset")
+        five_status = five.get("status", "")
+        if five_util is not None:
+            pct = f"{float(five_util) * 100:.0f}%"
+            parts = [f"5h utilization: {pct}"]
+            if five_status:
+                parts.append(f"status={five_status}")
+            if five_reset is not None:
+                parts.append(f"resets in {self._fmt_reset(five_reset)}")
+            lines.append(", ".join(parts))
+
+        seven_util = seven.get("utilization")
+        seven_reset = seven.get("reset")
+        seven_status = seven.get("status", "")
+        if seven_util is not None:
+            pct = f"{float(seven_util) * 100:.0f}%"
+            parts = [f"7d utilization: {pct}"]
+            if seven_status:
+                parts.append(f"status={seven_status}")
+            if seven_reset is not None:
+                parts.append(f"resets in {self._fmt_reset(seven_reset)}")
+            lines.append(", ".join(parts))
+
+        if not lines:
+            return ""
+
+        ts_attr = ""
+        if captured_at:
+            try:
+                dt = datetime.fromisoformat(captured_at)
+                ts_attr = f' timestamp="{dt.strftime("%a %Y-%m-%d %H:%M:%S UTC")}"'
+            except Exception:
+                pass
+
+        content = "\n".join(lines)
+        return f'<subscription_quota_block source="anthropic"{ts_attr}>\n{content}\n</subscription_quota_block>'
+
     async def chat(
         self,
         message: str,
@@ -520,15 +594,23 @@ class Agent:
             recent = self.memory.messages.get_recent(10)
             recall_context = await self.hippocampus.recall(message, recent)
         
-        # Inject recall as transient system context for this turn.
-        # Recall is synthetic context, not an assistant utterance.
+        # Inject transient system context for this turn (quota + recall).
+        transient_parts = []
+
+        quota_block = self._build_quota_block()
+        if quota_block:
+            transient_parts.append(quota_block)
+
         if recall_context:
             recall_ts = datetime.now(timezone.utc).strftime("%a %Y-%m-%d %H:%M:%S UTC")
-            self.llm.context.transient_system_context = (
+            transient_parts.append(
                 f"<recall_block source=\"hippocampus\" timestamp=\"{recall_ts}\">\n"
                 f"{recall_context}\n"
                 "</recall_block>"
             )
+
+        if transient_parts:
+            self.llm.context.transient_system_context = "\n".join(transient_parts)
         
         try:
             # Get response from LLM (handles tool calls internally)
