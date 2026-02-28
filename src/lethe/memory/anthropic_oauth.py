@@ -129,15 +129,33 @@ class AnthropicOAuth:
             return
         
         # Check token file
+        self._reload_tokens_from_disk()
+    
+    def _reload_tokens_from_disk(self):
+        """Reload tokens from disk (called on init and before refresh attempts)."""
         if TOKEN_FILE.exists():
             try:
                 data = json.loads(TOKEN_FILE.read_text())
                 self.access_token = data.get("access_token")
                 self.refresh_token = data.get("refresh_token")
                 self.expires_at = data.get("expires_at", 0)
+                self._token_file_mtime = TOKEN_FILE.stat().st_mtime
                 logger.info(f"OAuth: loaded tokens from {TOKEN_FILE}")
             except Exception as e:
                 logger.error(f"OAuth: failed to load tokens from {TOKEN_FILE}: {e}")
+    
+    def _check_token_file_changed(self) -> bool:
+        """Check if token file was modified externally (e.g., by oauth-login)."""
+        if not TOKEN_FILE.exists():
+            return False
+        try:
+            current_mtime = TOKEN_FILE.stat().st_mtime
+            if hasattr(self, '_token_file_mtime') and current_mtime > self._token_file_mtime:
+                logger.info("OAuth: token file changed externally, reloading")
+                return True
+        except Exception:
+            pass
+        return False
     
     def save_tokens(self):
         """Persist tokens to file."""
@@ -158,6 +176,10 @@ class AnthropicOAuth:
     
     async def ensure_access(self):
         """Refresh the access token if expired."""
+        # Hot-reload tokens from disk if file changed (e.g., oauth-login ran)
+        if self._check_token_file_changed():
+            self._reload_tokens_from_disk()
+        
         if not self.refresh_token:
             # No refresh token (env-only mode) — just use what we have
             return
@@ -176,7 +198,18 @@ class AnthropicOAuth:
         })
         
         if response.status_code != 200:
-            raise RuntimeError(f"OAuth token refresh failed: {response.status_code} {response.text}")
+            error_text = response.text
+            # Handle invalid_grant specifically - refresh token expired/revoked
+            if "invalid_grant" in error_text.lower():
+                logger.error("OAuth refresh token invalid - manual re-auth required")
+                # Clear tokens so we don't keep retrying with bad credentials
+                self.access_token = None
+                self.refresh_token = None
+                self.expires_at = 0
+                raise RuntimeError(
+                    "OAuth refresh token expired. Please run: cd ~/.lethe && uv run lethe oauth-login"
+                )
+            raise RuntimeError(f"OAuth token refresh failed: {response.status_code} {error_text}")
         
         data = response.json()
         self.access_token = data["access_token"]
